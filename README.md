@@ -144,7 +144,7 @@ Local frontend: `cd frontend && npm install && VITE_API_URL=http://localhost:800
 
 ## Status
 
-- [ ] 1. Skeleton: API, frontend, schema, health check (code done, deploy pending)
+- [x] 1. Skeleton: API, frontend, schema, health check — live at https://forestall-gamma.vercel.app
 - [ ] 2. PayPal sandbox auth + test order
 - [ ] 3. Capture webhook intake
 - [ ] 4. Delivery simulator
