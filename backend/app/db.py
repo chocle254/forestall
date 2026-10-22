@@ -1,5 +1,10 @@
-"""Postgres (Neon) pool and a tiny migration runner."""
+"""Postgres (Neon) pool and a tiny migration runner.
 
+The pool is created on first use rather than at startup, because on Vercel the
+app runs as a serverless function and may start cold on any request.
+"""
+
+import asyncio
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -9,39 +14,42 @@ from .config import settings
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
-pool: asyncpg.Pool | None = None
+_pool: asyncpg.Pool | None = None
+_lock = asyncio.Lock()
 
 
 def _dsn_and_ssl() -> tuple[str, str | bool]:
     # Neon URLs carry ?sslmode=require&channel_binding=require; asyncpg rejects
     # channel_binding, so drop the query string and pass ssl explicitly.
-    # Railway's private network (*.railway.internal) has no TLS.
     parts = urlsplit(settings.database_url)
-    host = parts.hostname or ""
-    no_tls = host.endswith(".railway.internal") or "sslmode=disable" in parts.query
+    no_tls = "sslmode=disable" in parts.query
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")), (False if no_tls else "require")
 
 
-async def connect() -> None:
-    global pool
+async def get_pool() -> asyncpg.Pool | None:
+    global _pool
     if not settings.database_url:
-        return
-    dsn, ssl = _dsn_and_ssl()
-    # statement_cache_size=0 keeps asyncpg compatible with Neon's pgbouncer pooler.
-    pool = await asyncpg.create_pool(
-        dsn, ssl=ssl, min_size=1, max_size=5, statement_cache_size=0
-    )
-    await migrate()
+        return None
+    if _pool is None:
+        async with _lock:
+            if _pool is None:
+                dsn, ssl = _dsn_and_ssl()
+                # statement_cache_size=0 keeps asyncpg compatible with Neon's pooler.
+                pool = await asyncpg.create_pool(
+                    dsn, ssl=ssl, min_size=0, max_size=5, statement_cache_size=0
+                )
+                await _migrate(pool)
+                _pool = pool
+    return _pool
 
 
 async def close() -> None:
-    if pool:
-        await pool.close()
+    if _pool:
+        await _pool.close()
 
 
-async def migrate() -> None:
+async def _migrate(pool: asyncpg.Pool) -> None:
     """Apply each migrations/*.sql file once, in name order."""
-    assert pool
     async with pool.acquire() as conn:
         await conn.execute(
             "create table if not exists schema_migrations ("
@@ -59,11 +67,11 @@ async def migrate() -> None:
 async def check() -> str:
     if not settings.database_url:
         return "not_configured"
-    if not pool:
-        return "unreachable"
     try:
+        pool = await get_pool()
+        assert pool
         async with pool.acquire() as conn:
             await conn.fetchval("select 1")
         return "ok"
-    except Exception:
-        return "unreachable"
+    except Exception as e:  # surfaced on /api/health to make setup issues obvious
+        return f"error: {type(e).__name__}"

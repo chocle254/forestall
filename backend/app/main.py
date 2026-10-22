@@ -1,20 +1,10 @@
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import db
 from .config import settings
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await db.connect()
-    yield
-    await db.close()
-
-
-app = FastAPI(title="Forestall API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Forestall API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,8 +13,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# On Vercel, every request under /api/* is routed to this app with its full path.
+api = APIRouter(prefix="/api")
 
-@app.get("/health")
+
+@api.get("/health")
 async def health():
     return {
         "status": "ok",
@@ -34,12 +27,16 @@ async def health():
     }
 
 
-@app.get("/api/orders")
+@api.get("/orders")
 async def list_orders():
-    if not db.pool:
+    pool = await db.get_pool()
+    if not pool:
         return []
-    rows = await db.pool.fetch(
+    rows = await pool.fetch(
         "select id, paypal_order_id, buyer_name, amount, currency, captured_at, tracking_number"
         " from orders order by captured_at desc limit 100"
     )
     return [dict(r) for r in rows]
+
+
+app.include_router(api)

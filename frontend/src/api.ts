@@ -1,4 +1,4 @@
-export const API_URL = (import.meta.env.VITE_API_URL as string) || "http://localhost:8000";
+export const API_URL = (import.meta.env.VITE_API_URL as string) || "";
 
 export type Health = {
   status: string;
@@ -8,7 +8,7 @@ export type Health = {
 };
 
 export async function getHealth(): Promise<Health> {
-  const r = await fetch(`${API_URL}/health`);
+  const r = await fetch(`${API_URL}/api/health`);
   if (!r.ok) throw new Error(`API returned ${r.status}`);
   return r.json();
 }

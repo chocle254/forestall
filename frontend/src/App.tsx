@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getHealth, type Health, API_URL } from "./api";
+import { getHealth, type Health } from "./api";
 
 function Pill({ label, value }: { label: string; value: string }) {
   const good = value === "ok" || value === "configured";
@@ -29,7 +29,7 @@ export default function App() {
       </header>
       <section className="card">
         <h2>System status</h2>
-        {error && <p className="warn">Can’t reach the API at {API_URL}: {error}</p>}
+        {error && <p className="warn">Can’t reach the API: {error}</p>}
         {!error && !health && <p>Checking…</p>}
         {health && (
           <>

@@ -124,22 +124,23 @@ One screen, built around a single workflow. It's a work queue, not a dashboard o
 
 | Path | What | Hosted on |
 |---|---|---|
-| `frontend/` | React (Vite) seller app | Vercel |
-| `backend/` | FastAPI: PayPal webhooks, AI calls, action execution, delivery simulator | Railway |
-| `backend/migrations/` | Postgres schema, applied automatically on boot | Neon (via Vercel Storage) |
+| `frontend/` | React (Vite) seller app | Vercel (service `frontend`) |
+| `backend/` | FastAPI: PayPal webhooks, AI calls, action execution, delivery simulator | Vercel (service `backend`, serves `/api/*`) |
+| `backend/migrations/` | Postgres schema, applied automatically on first request | Neon (via Vercel Storage) |
+
+Both run in one Vercel project ([Vercel Services](https://vercel.com/docs/services), see `vercel.json`), so they deploy together on every push and share one URL.
 
 PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREATED`; Orders v2 (read, track), Payments v2 (refund), Disputes v1 (read, provide-evidence).
 
 ## Run and deploy
 
-1. **Database:** in Vercel → Storage, create a Neon Postgres database and copy its `DATABASE_URL`. The backend creates the tables on first start.
-2. **Backend (Railway):** New Project → Deploy from GitHub → this repo, root directory `backend`. Set the variables from `backend/.env.example`.
-3. **Frontend (Vercel):** import this repo with root directory `frontend`. Set `VITE_API_URL` to the Railway URL.
-4. Add the Vercel URL to the backend's `CORS_ORIGINS`.
-5. Open the frontend: the status card should show API, Database and PayPal as connected.
+1. Import this repo into Vercel at the repo root. `vercel.json` defines both services.
+2. In the project's **Storage** tab, add a **Neon** Postgres database. That sets `DATABASE_URL`, and the backend creates its tables on first request.
+3. Add the PayPal sandbox variables from `backend/.env.example`.
+4. Open the deployment: the status card should show API, Database and PayPal as connected.
 
 Local backend: `cd backend && pip install -r requirements.txt && uvicorn app.main:app --reload`
-Local frontend: `cd frontend && npm install && npm run dev`
+Local frontend: `cd frontend && npm install && VITE_API_URL=http://localhost:8000 npm run dev`
 
 ## Status
 
