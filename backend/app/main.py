@@ -1,10 +1,20 @@
-import httpx
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import db
 from .config import settings
 
-app = FastAPI(title="Forestall API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await db.connect()
+    yield
+    await db.close()
+
+
+app = FastAPI(title="Forestall API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,28 +24,22 @@ app.add_middleware(
 )
 
 
-async def _check_supabase() -> str:
-    if not settings.supabase_url or not settings.supabase_service_key:
-        return "not_configured"
-    headers = {
-        "apikey": settings.supabase_service_key,
-        "Authorization": f"Bearer {settings.supabase_service_key}",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(
-                f"{settings.supabase_url}/rest/v1/orders?select=id&limit=1", headers=headers
-            )
-        return "ok" if r.status_code == 200 else f"error_{r.status_code}"
-    except httpx.HTTPError:
-        return "unreachable"
-
-
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
         "service": "forestall-api",
-        "supabase": await _check_supabase(),
+        "database": await db.check(),
         "paypal": "configured" if settings.paypal_client_id else "not_configured",
     }
+
+
+@app.get("/api/orders")
+async def list_orders():
+    if not db.pool:
+        return []
+    rows = await db.pool.fetch(
+        "select id, paypal_order_id, buyer_name, amount, currency, captured_at, tracking_number"
+        " from orders order by captured_at desc limit 100"
+    )
+    return [dict(r) for r in rows]

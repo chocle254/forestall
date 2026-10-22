@@ -1,8 +1,6 @@
--- Forestall schema: one seller, the INR prevention loop.
+-- Forestall schema: one seller, the INR prevention loop. Runs on Neon Postgres.
 
-create extension if not exists pgcrypto;
-
-create table orders (
+create table if not exists orders (
   id               uuid primary key default gen_random_uuid(),
   paypal_order_id  text unique not null,
   capture_id       text unique,
@@ -16,7 +14,7 @@ create table orders (
   created_at       timestamptz not null default now()
 );
 
-create table shipment_events (
+create table if not exists shipment_events (
   id           uuid primary key default gen_random_uuid(),
   order_id     uuid not null references orders(id) on delete cascade,
   status       text not null,          -- label_created | in_transit | stalled | out_for_delivery | delivered
@@ -24,17 +22,17 @@ create table shipment_events (
   occurred_at  timestamptz not null default now(),
   source       text not null default 'simulator'
 );
-create index on shipment_events (order_id, occurred_at);
+create index if not exists shipment_events_order_idx on shipment_events (order_id, occurred_at);
 
-create table buyer_messages (
+create table if not exists buyer_messages (
   id           uuid primary key default gen_random_uuid(),
   order_id     uuid not null references orders(id) on delete cascade,
   body         text not null,
   received_at  timestamptz not null default now()
 );
-create index on buyer_messages (order_id, received_at);
+create index if not exists buyer_messages_order_idx on buyer_messages (order_id, received_at);
 
-create table flags (
+create table if not exists flags (
   id          uuid primary key default gen_random_uuid(),
   order_id    uuid not null references orders(id) on delete cascade,
   risk_level  text not null check (risk_level in ('low','medium','high')),
@@ -43,9 +41,9 @@ create table flags (
   resolved    boolean not null default false,
   created_at  timestamptz not null default now()
 );
-create index on flags (order_id);
+create index if not exists flags_order_idx on flags (order_id);
 
-create table actions (
+create table if not exists actions (
   id               uuid primary key default gen_random_uuid(),
   flag_id          uuid not null references flags(id) on delete cascade,
   type             text not null check (type in ('attach_tracking','message_buyer','partial_refund')),
@@ -57,9 +55,9 @@ create table actions (
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now()
 );
-create index on actions (flag_id);
+create index if not exists actions_flag_idx on actions (flag_id);
 
-create table disputes (
+create table if not exists disputes (
   id                 uuid primary key default gen_random_uuid(),
   paypal_dispute_id  text unique not null,
   order_id           uuid references orders(id) on delete set null,
@@ -69,20 +67,3 @@ create table disputes (
   submitted_at       timestamptz,
   created_at         timestamptz not null default now()
 );
-
--- The frontend reads with the anon key; only the backend (service role) writes.
-alter table orders          enable row level security;
-alter table shipment_events enable row level security;
-alter table buyer_messages  enable row level security;
-alter table flags           enable row level security;
-alter table actions         enable row level security;
-alter table disputes        enable row level security;
-
-create policy "public read" on orders          for select using (true);
-create policy "public read" on shipment_events for select using (true);
-create policy "public read" on buyer_messages  for select using (true);
-create policy "public read" on flags           for select using (true);
-create policy "public read" on actions         for select using (true);
-create policy "public read" on disputes        for select using (true);
-
-alter publication supabase_realtime add table orders, shipment_events, flags, actions, disputes;

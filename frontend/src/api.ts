@@ -3,7 +3,7 @@ export const API_URL = (import.meta.env.VITE_API_URL as string) || "http://local
 export type Health = {
   status: string;
   service: string;
-  supabase: string;
+  database: string;
   paypal: string;
 };
 

@@ -4,8 +4,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    supabase_url: str = ""
-    supabase_service_key: str = ""
+    # Neon connection string from Vercel Storage (the pooled one is fine).
+    database_url: str = ""
 
     paypal_client_id: str = ""
     paypal_client_secret: str = ""

@@ -34,7 +34,7 @@ export default function App() {
         {health && (
           <>
             <Pill label="API" value={health.status} />
-            <Pill label="Supabase" value={health.supabase} />
+            <Pill label="Database" value={health.database} />
             <Pill label="PayPal" value={health.paypal} />
           </>
         )}
