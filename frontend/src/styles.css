@@ -32,3 +32,14 @@ button.link { background: none; color: inherit; padding: 0; margin: 0; text-deco
 .orders li:last-child { border-bottom: 0; }
 .orders .row { display: flex; justify-content: space-between; gap: 8px; margin: 4px 0; }
 code { font-size: 13px; word-break: break-all; }
+.badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.badge.high { background: #c62828; color: #fff; }
+.badge.medium { background: #ef8f00; color: #fff; }
+.badge.low, .badge.none { background: color-mix(in srgb, var(--good) 18%, var(--card)); color: var(--good); }
+.flag { margin-top: 8px; padding: 10px 12px; border-radius: 8px; border-left: 3px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, var(--card)); }
+.note { margin-top: 6px; }
+.sim { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.sim select { flex: 1 1 200px; min-width: 0; padding: 9px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--card); color: var(--text); font-size: 14px; }
+.sim button { margin-top: 0; }

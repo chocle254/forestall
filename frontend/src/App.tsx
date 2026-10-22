@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-import { createTestOrder, getHealth, getOrders, type Health, type Order } from "./api";
+import {
+  createTestOrder, getHealth, getOrders, getScenarios, simulate,
+  type Health, type Order, type Scenario,
+} from "./api";
 
 function Pill({ label, value }: { label: string; value: string }) {
   const good = value === "ok" || value === "sandbox";
@@ -30,6 +33,72 @@ function CheckoutBanner() {
   );
 }
 
+const SIGNAL_LABEL: Record<string, string> = {
+  no_tracking: "No tracking on PayPal",
+  stalled: "Shipment stalled",
+  buyer_concern: "Buyer worried",
+  delivered_not_received: "Delivered, not received",
+};
+
+function OrderRow({ o, scenarios, onChange }: { o: Order; scenarios: Scenario[]; onChange: () => void }) {
+  const [scenario, setScenario] = useState(scenarios[0]?.id ?? "");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await simulate(o.id, scenario || scenarios[0].id);
+      if (r.ai_error) setNote(`Scenario applied, but the AI couldn't assess it: ${r.ai_error}`);
+      else if (r.assessment && r.assessment.risk_level === "low") setNote(`AI: low risk. ${r.assessment.reason}`);
+      onChange();
+    } catch (e) {
+      setNote(`Failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <li>
+      <div className="row">
+        <strong>{o.buyer_name ?? "Unknown buyer"}</strong>
+        {o.risk_level ? (
+          <span className={`badge ${o.risk_level}`}>{o.risk_level.toUpperCase()}</span>
+        ) : (
+          <span className="badge none">OK</span>
+        )}
+      </div>
+      <div className="row">
+        <code>{o.paypal_order_id}</code>
+        <strong>{money(o)}</strong>
+      </div>
+      <div className="muted small">
+        Paid {when(o.captured_at)} ·{" "}
+        {o.tracking_attached_at ? `Tracking on PayPal (${o.tracking_number})` : o.tracking_number ? "Tracking NOT on PayPal" : "No tracking yet"}
+      </div>
+      {o.flag_reason && (
+        <div className="flag">
+          <div className="small"><b>{SIGNAL_LABEL[o.signal ?? ""] ?? o.signal}</b> · flagged by AI</div>
+          <div>{o.flag_reason}</div>
+        </div>
+      )}
+      {note && <div className="muted small note">{note}</div>}
+      {scenarios.length > 0 && (
+        <div className="sim">
+          <select value={scenario} onChange={(e) => setScenario(e.target.value)} disabled={busy}>
+            {scenarios.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+          <button className="secondary" onClick={run} disabled={busy}>
+            {busy ? "AI is assessing…" : "Simulate + assess"}
+          </button>
+        </div>
+      )}
+    </li>
+  );
+}
+
 const money = (o: Order) => `${o.currency === "USD" ? "$" : o.currency + " "}${Number(o.amount).toFixed(2)}`;
 const when = (s: string) => new Date(s).toLocaleString();
 
@@ -38,12 +107,15 @@ export default function App() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [scenarios, setScenarios] = useState<Scenario[]>([]);
 
   const load = () => {
     setError(null);
     getHealth().then(setHealth).catch((e) => setError(String(e.message ?? e)));
     getOrders().then(setOrders).catch(() => {});
+    getScenarios().then(setScenarios).catch(() => {});
   };
+  const refreshOrders = () => getOrders().then(setOrders).catch(() => {});
   useEffect(load, []);
 
   const buy = async () => {
@@ -77,6 +149,7 @@ export default function App() {
             <Pill label="Database" value={health.database} />
             <Pill label="PayPal" value={health.paypal} />
             <Pill label="PayPal mode" value={health.paypal_env} />
+            <Pill label={`AI (${health.ai_model})`} value={health.ai} />
           </>
         )}
         <button className="secondary" onClick={load}>Recheck</button>
@@ -96,21 +169,12 @@ export default function App() {
       <section className="card">
         <h2>Orders ({orders.length})</h2>
         {orders.length === 0 && <p className="muted">No orders yet.</p>}
+        <p className="muted small">
+          No real carrier data exists in the sandbox, so pick a delivery story for an order and let the AI judge it.
+        </p>
         <ul className="orders">
           {orders.map((o) => (
-            <li key={o.id}>
-              <div>
-                <strong>{o.buyer_name ?? "Unknown buyer"}</strong>
-                <span className="muted"> · {when(o.captured_at)}</span>
-              </div>
-              <div className="row">
-                <code>{o.paypal_order_id}</code>
-                <strong>{money(o)}</strong>
-              </div>
-              <div className="muted small">
-                Capture {o.capture_id ?? "—"} · {o.tracking_number ? `Tracking ${o.tracking_number}` : "No tracking yet"}
-              </div>
-            </li>
+            <OrderRow key={o.id} o={o} scenarios={scenarios} onChange={refreshOrders} />
           ))}
         </ul>
       </section>

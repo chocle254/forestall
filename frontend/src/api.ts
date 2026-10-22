@@ -6,6 +6,8 @@ export type Health = {
   database: string;
   paypal: string;
   paypal_env: string;
+  ai: string;
+  ai_model: string;
 };
 
 export type Order = {
@@ -18,6 +20,18 @@ export type Order = {
   currency: string;
   captured_at: string;
   tracking_number: string | null;
+  tracking_attached_at: string | null;
+  risk_level: "low" | "medium" | "high" | null;
+  signal: string | null;
+  flag_reason: string | null;
+};
+
+export type Scenario = { id: string; label: string };
+
+export type SimulateResult = {
+  simulation: { scenario: string; label: string; shift_hours: number };
+  assessment: { risk_level: string; signal: string; reason: string; facts_used: string[]; cached: boolean } | null;
+  ai_error?: string;
 };
 
 export type TestOrder = {
@@ -44,3 +58,10 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 export const getHealth = () => call<Health>("/api/health");
 export const getOrders = () => call<Order[]>("/api/orders");
 export const createTestOrder = () => call<TestOrder>("/api/demo/test-order", { method: "POST" });
+export const getScenarios = () => call<Scenario[]>("/api/demo/scenarios");
+export const simulate = (orderId: string, scenario: string) =>
+  call<SimulateResult>(`/api/orders/${orderId}/simulate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scenario }),
+  });

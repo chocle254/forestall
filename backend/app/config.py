@@ -12,6 +12,14 @@ class Settings(BaseSettings):
     paypal_base_url: str = "https://api-m.sandbox.paypal.com"
     paypal_webhook_id: str = ""
 
+    # AI: any OpenAI-compatible chat API. Defaults to Groq's free tier.
+    # Switch to NVIDIA by setting AI_BASE_URL=https://integrate.api.nvidia.com/v1,
+    # AI_MODEL=meta/llama-3.3-70b-instruct and AI_API_KEY=<nvapi-...>.
+    groq_api_key: str = ""
+    ai_api_key: str = ""
+    ai_base_url: str = "https://api.groq.com/openai/v1"
+    ai_model: str = "llama-3.3-70b-versatile"
+
     # Comma-separated origins allowed to call the API (the Vercel frontend).
     cors_origins: str = "http://localhost:5173"
 

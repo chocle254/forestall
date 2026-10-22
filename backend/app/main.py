@@ -1,3 +1,4 @@
+import json
 import random
 from urllib.parse import quote
 
@@ -5,7 +6,9 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from . import db, orders, paypal
+from pydantic import BaseModel
+
+from . import ai, db, orders, paypal, risk, simulator
 from .config import settings
 
 app = FastAPI(title="Forestall API", version="0.2.0")
@@ -36,6 +39,8 @@ async def health():
         "database": await db.check(),
         "paypal": await paypal.check(),
         "paypal_env": "sandbox" if "sandbox" in settings.paypal_base_url else "live",
+        "ai": await ai.check(),
+        "ai_model": ai.model_name(),
     }
 
 
@@ -45,10 +50,75 @@ async def list_orders():
     if not pool:
         return []
     rows = await pool.fetch(
-        "select id, paypal_order_id, capture_id, buyer_name, buyer_email, amount, currency,"
-        " captured_at, tracking_number from orders order by captured_at desc limit 100"
+        """
+        select o.id, o.paypal_order_id, o.capture_id, o.buyer_name, o.buyer_email, o.amount, o.currency,
+               o.captured_at, o.tracking_number, o.tracking_attached_at, o.demo_shift_hours,
+               f.risk_level, f.signal, f.reason as flag_reason, f.updated_at as flagged_at
+        from orders o
+        left join flags f on f.order_id = o.id and not f.resolved
+        order by o.captured_at desc limit 100
+        """
     )
     return [dict(r) for r in rows]
+
+
+@api.get("/orders/{order_id}")
+async def order_detail(order_id: str):
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(503, "database not configured")
+    o = await pool.fetchrow("select * from orders where id::text = $1 or paypal_order_id = $1", order_id)
+    if not o:
+        raise HTTPException(404, "order not found")
+    oid = o["id"]
+    return {
+        "order": dict(o),
+        "shipment_events": [dict(r) for r in await pool.fetch(
+            "select status, location, occurred_at, source from shipment_events where order_id=$1 order by occurred_at", oid)],
+        "buyer_messages": [dict(r) for r in await pool.fetch(
+            "select body, received_at from buyer_messages where order_id=$1 order by received_at", oid)],
+        "flag": (lambda r: dict(r) if r else None)(await pool.fetchrow(
+            "select id, risk_level, signal, reason, created_at, updated_at from flags where order_id=$1 and not resolved", oid)),
+        "latest_assessment": (lambda r: {**dict(r), "result": json.loads(r["result"])} if r else None)(await pool.fetchrow(
+            "select id, result, model, created_at from assessments where order_id=$1 order by created_at desc limit 1", oid)),
+    }
+
+
+# --- AI risk assessment (slice 5) --------------------------------------------
+
+@api.post("/orders/{order_id}/assess")
+async def assess_order(order_id: str, force: bool = False):
+    try:
+        return await risk.assess(order_id, force=force)
+    except LookupError:
+        raise HTTPException(404, "order not found")
+    except ai.AIUnavailable as e:
+        raise HTTPException(503, str(e))
+
+
+class ScenarioIn(BaseModel):
+    scenario: str
+
+
+@api.get("/demo/scenarios")
+async def list_scenarios():
+    return [{"id": k, "label": v["label"]} for k, v in simulator.SCENARIOS.items()]
+
+
+@api.post("/orders/{order_id}/simulate")
+async def simulate(order_id: str, body: ScenarioIn):
+    """Replay a delivery story on this order, then have the AI assess it."""
+    try:
+        sim = await simulator.apply(order_id, body.scenario)
+    except KeyError:
+        raise HTTPException(400, f"unknown scenario; choose one of {list(simulator.SCENARIOS)}")
+    except LookupError:
+        raise HTTPException(404, "order not found")
+    try:
+        assessment = await risk.assess(order_id)
+    except ai.AIUnavailable as e:
+        return {"simulation": sim, "assessment": None, "ai_error": str(e)}
+    return {"simulation": sim, "assessment": assessment}
 
 
 # --- Demo checkout: a sandbox buyer pays for a test order ---------------------
