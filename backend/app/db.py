@@ -12,20 +12,24 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 pool: asyncpg.Pool | None = None
 
 
-def _dsn() -> str:
+def _dsn_and_ssl() -> tuple[str, str | bool]:
     # Neon URLs carry ?sslmode=require&channel_binding=require; asyncpg rejects
     # channel_binding, so drop the query string and pass ssl explicitly.
+    # Railway's private network (*.railway.internal) has no TLS.
     parts = urlsplit(settings.database_url)
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    host = parts.hostname or ""
+    no_tls = host.endswith(".railway.internal") or "sslmode=disable" in parts.query
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")), (False if no_tls else "require")
 
 
 async def connect() -> None:
     global pool
     if not settings.database_url:
         return
+    dsn, ssl = _dsn_and_ssl()
     # statement_cache_size=0 keeps asyncpg compatible with Neon's pgbouncer pooler.
     pool = await asyncpg.create_pool(
-        _dsn(), ssl="require", min_size=1, max_size=5, statement_cache_size=0
+        dsn, ssl=ssl, min_size=1, max_size=5, statement_cache_size=0
     )
     await migrate()
 
