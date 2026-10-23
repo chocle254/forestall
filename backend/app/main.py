@@ -2,7 +2,7 @@ import json
 import random
 from urllib.parse import quote
 
-from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
@@ -171,10 +171,14 @@ async def order_timeline(order_id: str):
 
 
 @api.api_route("/watch/tick", methods=["GET", "POST"])
-async def watch_tick(authorization: str = Header(default="")):
-    """Scheduled sweep (Vercel Cron daily + GitHub Actions every 15 min)."""
-    if not settings.cron_secret or authorization != f"Bearer {settings.cron_secret}":
-        raise HTTPException(401, "missing or wrong scheduler secret")
+async def watch_tick():
+    """Check every watched order that is due.
+
+    Public on purpose: called by Vercel Cron (daily), by the app whenever it is
+    opened, and optionally by any pinger. The sweep itself is throttled in the
+    database (once per 5 minutes) and only touches orders that are due, so extra
+    calls cost nothing.
+    """
     return await watcher.sweep()
 
 

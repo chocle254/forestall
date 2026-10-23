@@ -215,10 +215,23 @@ async def advance(order_id: str, hours: int = 24) -> dict:
     return await check(order_id, trigger=f"time +{hours}h")
 
 
+SWEEP_EVERY = timedelta(minutes=5)
+
+
 async def sweep(limit: int = 20) -> dict:
-    """Check every watched order that is due. Called by the scheduler."""
+    """Check every watched order that is due.
+
+    Safe to call publicly: the database lets only one sweep run per SWEEP_EVERY,
+    and a sweep only touches orders whose next_check_at has passed.
+    """
     pool = await db.get_pool()
     assert pool
+    claimed = await pool.fetchval(
+        "update sweep_state set last_run_at = now() where id = 1 and last_run_at < now() - $1::interval"
+        " returning last_run_at", SWEEP_EVERY)
+    if not claimed:
+        nxt = await pool.fetchval("select last_run_at + $1::interval from sweep_state where id = 1", SWEEP_EVERY)
+        return {"ran": False, "reason": "a sweep ran recently", "next_sweep_after": nxt}
     due = await pool.fetch(
         "select id from orders where watch_status='watching' and (next_check_at is null or next_check_at <= now())"
         " order by next_check_at nulls first limit $1", limit)
@@ -230,4 +243,4 @@ async def sweep(limit: int = 20) -> dict:
         except Exception as e:  # one bad order must not stop the sweep
             results.append({"order_id": str(r["id"]), "error": type(e).__name__})
     watching = await pool.fetchval("select count(*) from orders where watch_status='watching'")
-    return {"checked": len(results), "still_watching": watching, "results": results}
+    return {"ran": True, "checked": len(results), "still_watching": watching, "results": results}

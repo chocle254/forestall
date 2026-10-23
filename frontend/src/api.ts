@@ -99,3 +99,5 @@ export const getTimeline = (id: string) => call<TimelineItem[]>(`/api/orders/${i
 export const getReport = () => call<Report>("/api/report");
 export const createCardOrder = () =>
   call<{ order: Order; item: { name: string }; paypal_status: string }>("/api/demo/card-order", { method: "POST" });
+// Nudge the watcher whenever the app opens (the server throttles it).
+export const nudgeWatcher = () => fetch(`${API_URL}/api/watch/tick`, { method: "POST" }).catch(() => {});

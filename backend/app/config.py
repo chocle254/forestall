@@ -22,9 +22,6 @@ class Settings(BaseSettings):
     # Tried once if the main model is retired, overloaded or rate limited.
     ai_fallback_model: str = "qwen/qwen3.8-27b"
 
-    # Shared secret the scheduler (Vercel Cron / GitHub Actions) sends to /api/watch/tick.
-    cron_secret: str = ""
-
     # Comma-separated origins allowed to call the API (the Vercel frontend).
     cors_origins: str = "http://localhost:5173"
 

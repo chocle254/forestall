@@ -143,7 +143,7 @@ PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREAT
 ## How Forestall follows an order
 
 - **Watch starts at "shipped".** From then on the order is checked whenever something happens (a carrier scan, a buyer message, a seller action) **and** whenever time alone creates risk: 48h without tracking on PayPal, 72h without a carrier scan, and 24h after delivery. Each check stores when the next threshold is crossed (`next_check_at`), so the scheduler only touches orders that are due.
-- **Scheduler:** GitHub Actions calls `/api/watch/tick` every 15 minutes (`.github/workflows/watch.yml`), with a daily Vercel Cron as backup. Both authenticate with `CRON_SECRET`.
+- **Scheduler, with no secrets and no setup:** `/api/watch/tick` is public but throttled in the database (one sweep per 5 minutes, only due orders), so calling it often costs nothing. It runs daily via Vercel Cron, every time the app is opened, and optionally every 15 minutes via GitHub Actions (`.github/workflows/watch.yml`). Sellers never deal with any of this.
 - **Protected** means delivered, no open risk after a quiet day, and tracking **read back from PayPal** (`GET /v2/checkout/orders/{id}` shows the tracker on the transaction). That proof is what wins an INR dispute.
 - **Audit trail:** every payment, scan, message, AI check (with its reason), flag and PayPal response is written to `order_timeline`. `/api/report` sums it up: orders watched, checks run, risks caught, PayPal confirmations, and the % of shipped orders with proof on PayPal.
 - **Limit:** in the sandbox this proves the mechanism (every order followed, every risk caught, every fix confirmed by PayPal). Measuring real dispute reduction needs live sellers.

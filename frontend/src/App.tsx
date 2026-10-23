@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   advanceOrder, checkOrder, createCardOrder, createTestOrder, getHealth, getOrders, getReport,
-  getScenarios, getTimeline, shipOrder,
+  getScenarios, getTimeline, nudgeWatcher, shipOrder,
   type Health, type Order, type Report, type Scenario, type TimelineItem,
 } from "./api";
 
@@ -211,7 +211,11 @@ export default function App() {
     getScenarios().then(setScenarios).catch(() => {});
     refresh();
   };
-  useEffect(load, []);
+  useEffect(() => {
+    load();
+    // Opening the app also lets the watcher catch up on any orders that are due.
+    nudgeWatcher().then(() => setTimeout(refresh, 500));
+  }, []);
 
   const quickBuy = async () => {
     setBusy(true);
