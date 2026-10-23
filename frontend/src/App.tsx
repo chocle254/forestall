@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import RiskQueue from "./RiskQueue";
+import Disputes from "./Disputes";
 import {
   approveAction, buyerReply, dismissAction, editAction,
   advanceOrder, checkOrder, createCardOrder, createTestOrder, getHealth, getOrders, getReport,
-  getEasyPostCodes, getScenarios, getTimeline, nudgeWatcher, shipOrder,
-  type Health, type Order, type Report, type Scenario, type ShipChoice, type TimelineItem,
+  getDisputes, getEasyPostCodes, getScenarios, getTimeline, nudgeWatcher, shipOrder,
+  type Dispute, type Health, type Order, type Report, type Scenario, type ShipChoice, type TimelineItem,
 } from "./api";
 
 const SIGNAL_LABEL: Record<string, string> = {
@@ -441,7 +442,9 @@ export default function App() {
     setTimeout(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   };
 
+  const [disputes, setDisputes] = useState<Dispute[]>([]);
   const refresh = () => {
+    getDisputes().then(setDisputes).catch(() => {});
     getOrders().then(setOrders).catch(() => {});
     getReport().then(setReport).catch(() => {});
   };
@@ -534,6 +537,8 @@ export default function App() {
           </section>
         )}
       </div>
+
+      <Disputes items={disputes} onChange={refresh} />
 
       <section className="card">
         <h2>System status</h2>

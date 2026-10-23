@@ -81,3 +81,15 @@ async def check() -> str:
         return "ok"
     except Exception as e:  # surfaced on /api/health to make setup issues obvious
         return f"error: {type(e).__name__}"
+
+
+async def get_setting(key: str) -> str | None:
+    pool = await get_pool()
+    return await pool.fetchval("select value from app_settings where key=$1", key) if pool else None
+
+
+async def set_setting(key: str, value: str) -> None:
+    pool = await get_pool()
+    assert pool
+    await pool.execute("insert into app_settings (key, value) values ($1,$2)"
+                       " on conflict (key) do update set value=excluded.value, updated_at=now()", key, value)

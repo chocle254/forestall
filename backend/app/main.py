@@ -4,11 +4,11 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from pydantic import BaseModel
 
-from . import actions, ai, db, easypost, investigate, orders, paypal, recommend, risk, simulator, watcher
+from . import actions, ai, db, disputes, easypost, investigate, orders, paypal, recommend, risk, simulator, watcher
 from .config import settings
 
 app = FastAPI(title="Forestall API", version="0.2.0")
@@ -362,6 +362,111 @@ async def easypost_webhook(request: Request):
                           {"new_scans": new, "status": tracker.get("status")})
     # Answer EasyPost fast; the watcher checks the order on its next sweep (or when the app opens).
     return {"order_id": str(oid), "new_scans": new}
+
+
+# --- PayPal webhooks (orders arrive automatically; disputes) -------------------
+
+@api.post("/paypal/webhook")
+async def paypal_register_webhook(request: Request):
+    """Register (or confirm) Forestall's PayPal webhook and remember its ID for signature checks."""
+    try:
+        r = await paypal.ensure_webhook(f"{_origin(request)}/api/webhooks/paypal")
+    except paypal.PayPalError as e:
+        raise HTTPException(502, {"paypal_status": e.status, "paypal_error": e.body})
+    await db.set_setting("paypal_webhook_id", r["id"])
+    return r
+
+
+@api.post("/webhooks/paypal")
+async def paypal_webhook(request: Request):
+    """PayPal pushes events here. Verified with PayPal before anything is trusted."""
+    raw = await request.body()
+    try:
+        event = json.loads(raw)
+    except ValueError:
+        raise HTTPException(400, "bad json")
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(503, "database not configured")
+    webhook_id = await db.get_setting("paypal_webhook_id")
+    valid = bool(webhook_id) and await paypal.verify_webhook(dict(request.headers), event, webhook_id)
+    resource = event.get("resource") or {}
+    await pool.execute("insert into webhook_log (source, event, valid, reference) values ('paypal',$1,$2,$3)",
+                       event.get("event_type"), valid, resource.get("id") or resource.get("dispute_id"))
+    if not valid:
+        raise HTTPException(401, "PayPal could not verify this webhook")
+
+    etype = event.get("event_type", "")
+    if etype == "PAYMENT.CAPTURE.COMPLETED":
+        order_id = ((resource.get("supplementary_data") or {}).get("related_ids") or {}).get("order_id")
+        if order_id:
+            o = await paypal.get_order(order_id)
+            if o.get("status") == "COMPLETED":
+                row = await orders.upsert(orders.summarize_capture(o))
+                return {"order": row["paypal_order_id"]}
+        return {"ignored": "capture without order"}
+    if etype.startswith("CUSTOMER.DISPUTE."):
+        d = await paypal.get_dispute(resource["dispute_id"])
+        out = await disputes.upsert_from_paypal(d)
+        return {"dispute": out["paypal_dispute_id"], "status": out["status"]}
+    return {"ignored": etype}
+
+
+# --- Disputes (slice 9) ----------------------------------------------------------
+
+@api.get("/disputes")
+async def list_disputes():
+    return await disputes.list_all()
+
+
+@api.post("/disputes/sync")
+async def sync_disputes():
+    """Pull disputes from PayPal (in case a webhook was missed)."""
+    try:
+        return await disputes.sync()
+    except paypal.PayPalError as e:
+        raise HTTPException(502, {"paypal_status": e.status, "paypal_error": e.body})
+
+
+@api.post("/disputes/{dispute_id}/draft")
+async def draft_dispute_evidence(dispute_id: str):
+    try:
+        return await disputes.draft_evidence(dispute_id)
+    except Exception as e:
+        _action_errors(e)
+
+
+class NotesIn(BaseModel):
+    notes: str
+
+
+@api.patch("/disputes/{dispute_id}")
+async def edit_dispute_notes(dispute_id: str, body: NotesIn):
+    if len(body.notes.strip()) < 40:
+        raise HTTPException(400, "notes are too short")
+    try:
+        return await disputes.edit_notes(dispute_id, body.notes)
+    except Exception as e:
+        _action_errors(e)
+
+
+@api.post("/disputes/{dispute_id}/submit")
+async def submit_dispute_response(dispute_id: str):
+    """The seller approved the response: submit it to PayPal."""
+    try:
+        return await disputes.submit(dispute_id)
+    except Exception as e:
+        _action_errors(e)
+
+
+@api.get("/disputes/{dispute_id}/evidence.pdf")
+async def dispute_evidence_pdf(dispute_id: str):
+    try:
+        doc = await disputes.evidence_document(dispute_id)
+    except Exception as e:
+        _action_errors(e)
+    return Response(doc, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="forestall-evidence-{dispute_id}.pdf"'})
 
 
 @api.get("/report")

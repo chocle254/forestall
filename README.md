@@ -177,13 +177,13 @@ Local frontend: `cd frontend && npm install && VITE_API_URL=http://localhost:800
 
 - [x] 1. Skeleton: API, frontend, schema, health check — live at https://forestall-gamma.vercel.app
 - [x] 2. PayPal sandbox auth + test order (PayPal checkout, or one-tap test-card order)
-- [ ] 3. Capture webhook intake
+- [x] 3. PayPal webhooks (verified with PayPal): captures arrive automatically
 - [x] 4. Delivery simulator + watcher (scripted stories over simulated days; scheduled sweep)
 - [x] 5. AI assess (Groq `openai/gpt-oss-120b`, Qwen fallback)
 - [x] 6. AI recommend (one fix per flag; PayPal parameters filled and validated by the backend)
 - [x] 7. Approve / edit / dismiss; execute on PayPal; buyer reply -> follow-up fix
 - [x] 8. AG Grid risk queue (ranked by risk, filter chips, quick search, column filters, inline Approve)
-- [ ] 9. Disputes + evidence
+- [x] 9. Disputes: webhook + sync, AI evidence draft with PDF report, seller approves, submitted via Disputes API
 - [ ] 10. Insights panel
 - [ ] 11. Final polish
 

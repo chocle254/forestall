@@ -144,3 +144,36 @@ export const editAction = (id: string, body: { message?: string; note_to_payer?:
   });
 export const buyerReply = (orderId: string, text: string) =>
   post<{ intent: { choice: string; summary: string } | null; proposal: unknown }>(`/api/orders/${orderId}/buyer-reply`, { text });
+
+export type Dispute = {
+  paypal_dispute_id: string;
+  order_id: string | null;
+  buyer_name: string | null;
+  paypal_order_id: string | null;
+  reason: string;
+  status: string;
+  stage: string | null;
+  amount: string | null;
+  currency: string | null;
+  due_at: string | null;
+  outcome: string | null;
+  allowed_actions: string[];
+  messages: { posted_by?: string; content?: string; time_posted?: string }[];
+  evidence: {
+    notes: string; key_facts: string[]; strength: string; strength_reason: string;
+    recommended_response: string; evidences: { evidence_type: string }[];
+  } | null;
+  evidence_status: "none" | "drafted" | "submitted" | "failed";
+  paypal_response: Record<string, unknown> | null;
+};
+
+export const getDisputes = () => call<Dispute[]>("/api/disputes");
+export const syncDisputes = () => post<{ synced: string[] }>("/api/disputes/sync");
+export const draftEvidence = (id: string) => post<Dispute>(`/api/disputes/${id}/draft`);
+export const editDisputeNotes = (id: string, notes: string) =>
+  call<Dispute>(`/api/disputes/${id}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notes }),
+  });
+export const submitDispute = (id: string) =>
+  post<{ status: string; how?: string; paypal_error?: unknown }>(`/api/disputes/${id}/submit`);
+export const evidencePdfUrl = (id: string) => `${API_URL}/api/disputes/${id}/evidence.pdf`;

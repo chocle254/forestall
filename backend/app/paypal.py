@@ -213,3 +213,75 @@ async def cancel_tracker(order_id: str, tracker_id: str) -> dict:
     """Mark a tracker on the PayPal order as CANCELLED (e.g. the failed parcel after a replacement)."""
     return await request("PATCH", f"/v2/checkout/orders/{order_id}/trackers/{tracker_id}",
                          json=[{"op": "replace", "path": "/status", "value": "CANCELLED"}])
+
+
+# --- Webhooks ------------------------------------------------------------------
+
+WEBHOOK_EVENTS = ["PAYMENT.CAPTURE.COMPLETED", "CUSTOMER.DISPUTE.CREATED", "CUSTOMER.DISPUTE.UPDATED",
+                  "CUSTOMER.DISPUTE.RESOLVED"]
+
+
+async def ensure_webhook(url: str) -> dict:
+    """Register our webhook URL with PayPal for the events we handle (idempotent)."""
+    hooks = (await request("GET", "/v1/notifications/webhooks")).get("webhooks", [])
+    for h in hooks:
+        if h.get("url") == url:
+            have = {e["name"] for e in h.get("event_types", [])}
+            if not set(WEBHOOK_EVENTS) <= have:
+                await request("PATCH", f"/v1/notifications/webhooks/{h['id']}", json=[
+                    {"op": "replace", "path": "/event_types", "value": [{"name": n} for n in WEBHOOK_EVENTS]}])
+            return {"id": h["id"], "url": url, "created": False}
+    h = await request("POST", "/v1/notifications/webhooks",
+                      json={"url": url, "event_types": [{"name": n} for n in WEBHOOK_EVENTS]})
+    return {"id": h["id"], "url": url, "created": True}
+
+
+async def verify_webhook(headers: dict, event: dict, webhook_id: str) -> bool:
+    """Ask PayPal whether this webhook delivery is genuine."""
+    body = {
+        "auth_algo": headers.get("paypal-auth-algo"),
+        "cert_url": headers.get("paypal-cert-url"),
+        "transmission_id": headers.get("paypal-transmission-id"),
+        "transmission_sig": headers.get("paypal-transmission-sig"),
+        "transmission_time": headers.get("paypal-transmission-time"),
+        "webhook_id": webhook_id,
+        "webhook_event": event,
+    }
+    if not all(body[k] for k in ("auth_algo", "cert_url", "transmission_id", "transmission_sig", "transmission_time")):
+        return False
+    try:
+        r = await request("POST", "/v1/notifications/verify-webhook-signature", json=body)
+    except PayPalError:
+        return False
+    return r.get("verification_status") == "SUCCESS"
+
+
+# --- Disputes ------------------------------------------------------------------
+
+async def list_disputes() -> list[dict]:
+    return (await request("GET", "/v1/customer/disputes?page_size=50")).get("items", [])
+
+
+async def get_dispute(dispute_id: str) -> dict:
+    return await request("GET", f"/v1/customer/disputes/{dispute_id}")
+
+
+async def provide_evidence(dispute_id: str, evidences: list[dict], files: list[tuple[str, bytes, str]]) -> dict:
+    """Submit evidence (multipart: 'input' JSON + optional documents)."""
+    headers = {"Authorization": f"Bearer {await _access_token()}"}
+    multipart = [("input", ("input.json", __import__("json").dumps({"evidences": evidences}), "application/json"))]
+    multipart += [(name, (name, data, ctype)) for name, data, ctype in files]
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(f"{settings.paypal_base_url}/v1/customer/disputes/{dispute_id}/provide-evidence",
+                              headers=headers, files=multipart)
+    if r.status_code >= 400:
+        raise PayPalError(r.status_code, _json(r))
+    return _json(r) if r.content else {}
+
+
+async def send_dispute_message(dispute_id: str, message: str) -> dict:
+    return await request("POST", f"/v1/customer/disputes/{dispute_id}/send-message", json={"message": message[:2000]})
+
+
+async def accept_claim(dispute_id: str, note: str) -> dict:
+    return await request("POST", f"/v1/customer/disputes/{dispute_id}/accept-claim", json={"note": note[:2000]})
