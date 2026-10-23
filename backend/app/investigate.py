@@ -91,7 +91,8 @@ async def investigate(order_id: str) -> dict:
 
     async def get_carrier_tracking():
         if order["carrier_source"] == "easypost" and order["easypost_tracker_id"]:
-            return easypost.summarize(await easypost.get_tracker(order["easypost_tracker_id"]))
+            return easypost.summarize(await easypost.get_tracker(order["easypost_tracker_id"]),
+                                      order["carrier_time_offset_s"])
         scans = await pool.fetch(
             "select status, location, occurred_at from shipment_events where order_id=$1 order by occurred_at", order_id)
         return simulator.carrier_tracking(order, scans, now)

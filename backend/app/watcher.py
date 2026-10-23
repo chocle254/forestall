@@ -95,16 +95,31 @@ async def ship_with_easypost(order_id: str, tracking_code: str, carrier: str = "
             pass  # tracking still works by polling; the webhook is a bonus
     tracker = await easypost.create_tracker(tracking_code, carrier)
     now = datetime.now(timezone.utc)
+
+    # Test mode: shift EasyPost's fixed historical timestamps so the parcel's history starts an hour
+    # after payment, and move the order's clock to just after the latest scan.
+    offset_s, shift_h, shipped_at = 0, 0, now
+    times = [datetime.fromisoformat(e["occurred_at"].replace("Z", "+00:00"))
+             for e in easypost.details_to_events(tracker) if e["occurred_at"]]
+    if easypost.test_mode() and times:
+        offset = (o["captured_at"] + timedelta(hours=1)) - min(times)
+        offset_s = int(offset.total_seconds())
+        last = max(times) + offset
+        shift_h = max(0, int(((last - now).total_seconds() + 3599) // 3600) + 1)
+        shipped_at = min(times) + offset
+
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute(
             """update orders set shipped_at=$2, tracking_number=$3, carrier=$4, carrier_source='easypost',
-               easypost_tracker_id=$5, tracking_public_url=$6, demo_scenario=null, demo_shift_hours=0,
-               watch_status='watching', next_check_at=now() where id=$1""",
-            order_id, now, tracking_code, tracker.get("carrier") or carrier, tracker["id"], tracker.get("public_url"))
+               easypost_tracker_id=$5, tracking_public_url=$6, demo_scenario=null, demo_shift_hours=$7,
+               carrier_time_offset_s=$8, watch_status='watching', next_check_at=now() where id=$1""",
+            order_id, shipped_at, tracking_code, tracker.get("carrier") or carrier, tracker["id"],
+            tracker.get("public_url"), shift_h, offset_s)
         await conn.execute("delete from shipment_events where order_id=$1", order_id)
         await log(conn, order_id, "shipped", f"Marked shipped · {tracker.get('carrier') or carrier} {tracking_code} (EasyPost)",
                   {"carrier": carrier, "tracking_number": tracking_code, "easypost_tracker": tracker["id"],
-                   "public_url": tracker.get("public_url")}, now)
+                   "public_url": tracker.get("public_url"),
+                   "test_mode_time_shift_hours": round(offset_s / 3600, 1) if offset_s else None}, shipped_at)
     await ingest_easypost(order_id, tracker)
     if attach_to_paypal:
         await attach_tracking(order_id, actor="seller")
@@ -116,11 +131,12 @@ async def ingest_easypost(order_id, tracker: dict) -> int:
     pool = await db.get_pool()
     assert pool
     new = 0
+    offset_s = await pool.fetchval("select carrier_time_offset_s from orders where id=$1", order_id) or 0
     async with pool.acquire() as conn, conn.transaction():
         for e in easypost.details_to_events(tracker):
             if not e["occurred_at"]:
                 continue
-            at = datetime.fromisoformat(e["occurred_at"].replace("Z", "+00:00"))
+            at = datetime.fromisoformat(e["occurred_at"].replace("Z", "+00:00")) + timedelta(seconds=offset_s)
             inserted = await conn.fetchval(
                 """insert into shipment_events (order_id, status, location, occurred_at, source, message)
                    values ($1,$2,$3,$4,'easypost',$5) on conflict do nothing returning id""",
@@ -130,7 +146,8 @@ async def ingest_easypost(order_id, tracker: dict) -> int:
                 where = f" · {e['location']}" if e["location"] else ""
                 await log(conn, order_id, "delivered" if e["status"] == "delivered" else "scan",
                           f"Carrier (EasyPost): {e['status'].replace('_', ' ')}{where}",
-                          {"status": e["status"], "message": e["message"], "source": "easypost"}, at)
+                          {"status": e["status"], "message": e["message"], "source": "easypost",
+                           "test_mode_time_shifted": bool(offset_s)}, at)
         if new:
             await conn.execute("update orders set next_check_at=now() where id=$1", order_id)
     return new

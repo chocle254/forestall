@@ -91,8 +91,15 @@ def details_to_events(tracker: dict) -> list[dict]:
     return out
 
 
-def summarize(tracker: dict) -> dict:
-    """What the investigating agent needs from a live tracker."""
+def summarize(tracker: dict, offset_s: int = 0) -> dict:
+    """What the investigating agent needs from a live tracker (test-mode times shifted like our timeline)."""
+    from datetime import datetime, timedelta
+
+    def shift(t):
+        if not t or not offset_s:
+            return t
+        return (datetime.fromisoformat(t.replace("Z", "+00:00")) + timedelta(seconds=offset_s)).isoformat()
+
     cd = tracker.get("carrier_detail") or {}
     return {
         "source": "EasyPost API" + (" (test mode)" if test_mode() else ""),
@@ -100,14 +107,15 @@ def summarize(tracker: dict) -> dict:
         "tracking_number": tracker.get("tracking_code"),
         "status": tracker.get("status"),
         "status_detail": tracker.get("status_detail"),
-        "est_delivery_date": tracker.get("est_delivery_date"),
+        "est_delivery_date": shift(tracker.get("est_delivery_date")),
         "signed_by": tracker.get("signed_by"),
         "carrier_service": cd.get("service"),
         "origin": cd.get("origin_location"),
         "destination": cd.get("destination_location"),
         "public_url": tracker.get("public_url"),
-        "scans": [{"status": e["status"], "location": e["location"], "time": e["occurred_at"], "message": e["message"]}
+        "scans": [{"status": e["status"], "location": e["location"], "time": shift(e["occurred_at"]), "message": e["message"]}
                   for e in details_to_events(tracker)],
+        **({"note": "test-mode timestamps shifted to start after payment"} if offset_s else {}),
     }
 
 
