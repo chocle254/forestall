@@ -100,13 +100,16 @@ async def _reveal_demo_events(conn, o) -> list[str]:
         return []
     scans_done = await conn.fetchval("select count(*) from shipment_events where order_id=$1", o["id"])
     msgs_done = await conn.fetchval("select count(*) from buyer_messages where order_id=$1", o["id"])
-    scans, msgs = simulator.due_events(o["demo_scenario"], o["captured_at"], _now(o), scans_done, msgs_done)
+    ship_to = json.loads(o["ship_to"]) if isinstance(o["ship_to"], str) else o["ship_to"]
+    scans, msgs = simulator.due_events(o["demo_scenario"], o["captured_at"], _now(o), scans_done, msgs_done, ship_to)
     kinds = []
     for at, status, loc in scans:
         await conn.execute(
             "insert into shipment_events (order_id, status, location, occurred_at) values ($1,$2,$3,$4)",
             o["id"], status, loc, at)
         pretty = status.replace("_", " ")
+        if status == "delivered":
+            pretty = "delivered"
         await log(conn, o["id"], "delivered" if status == "delivered" else "scan",
                   f"Carrier: {pretty} · {loc}", {"status": status, "location": loc}, at)
         kinds.append(status)
@@ -202,6 +205,14 @@ async def _propose(order_id: str, now: datetime) -> dict | None:
         return None
     if p and str(before) != p["id"]:
         async with pool.acquire() as conn:
+            inv = await conn.fetchrow("select findings, tool_calls from investigations where id=$1",
+                                      p["investigation_id"]) if p.get("investigation_id") else None
+            if inv:
+                f = json.loads(inv["findings"])
+                tools = [t["tool"] for t in json.loads(inv["tool_calls"])]
+                await log(conn, order_id, "investigation", "Forestall investigated: " + f["parcel_status"].replace("_", " "),
+                          {"summary": f["summary"], "tools_used": tools, "evidence": f["evidence"],
+                           "investigation_id": p["investigation_id"]}, now)
             await log(conn, order_id, "action", ACTION_TITLE[p["type"]],
                       {"action_id": p["id"], "type": p["type"], "justification": p["justification"],
                        "params": p["params"]}, now)

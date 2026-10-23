@@ -93,6 +93,12 @@ function Timeline({ id, version }: { id: string; version: number }) {
               <div className="small muted">{t.detail.reason}</div>
             )}
             {t.kind === "paypal" && <div className="small muted">PayPal response stored as proof</div>}
+            {t.kind === "investigation" && typeof t.detail.summary === "string" && (
+              <div className="small">{t.detail.summary}</div>
+            )}
+            {t.kind === "investigation" && Array.isArray(t.detail.tools_used) && (
+              <div className="small muted">Tools: {(t.detail.tools_used as string[]).map((x) => TOOL_LABEL[x] ?? x).join(", ")}</div>
+            )}
             {t.kind === "protected" && Array.isArray(t.detail.trackers_on_paypal) && (
               <div className="small muted">
                 Read back from PayPal: {t.detail.trackers_on_paypal.length} tracker(s) on the transaction
@@ -110,6 +116,36 @@ const FIX_TITLE: Record<string, string> = {
   message_buyer: "Message the buyer",
   partial_refund: "Goodwill partial refund",
 };
+
+const TOOL_LABEL: Record<string, string> = {
+  get_carrier_tracking: "carrier tracking",
+  get_carrier_facility_status: "facility alerts",
+  get_paypal_order: "PayPal order (live)",
+  get_buyer_messages: "buyer messages",
+  get_seller_policy: "seller policy",
+};
+
+function FindingsCard({ o }: { o: Order }) {
+  const f = o.findings;
+  if (!f) return null;
+  const tools = Array.from(new Set(o.tools_used)).map((t) => TOOL_LABEL[t] ?? t);
+  return (
+    <div className="findings">
+      <div className="row">
+        <b>🔍 Forestall investigated</b>
+        <span className="chip">{f.confidence} confidence</span>
+      </div>
+      <div className="small">{f.summary}</div>
+      <ul className="evidence">
+        {f.evidence.map((e, i) => (
+          <li key={i} className="small"><span className={`src src-${e.source}`}>{e.source}</span> {e.fact}</li>
+        ))}
+      </ul>
+      {f.buyer_need && <div className="small"><b>Buyer needs:</b> {f.buyer_need}</div>}
+      {tools.length > 0 && <div className="small muted">Checked: {tools.join(" · ")}</div>}
+    </div>
+  );
+}
 
 function ProposedFix({ o }: { o: Order }) {
   if (!o.action_type || !o.action_params) return null;
@@ -195,6 +231,7 @@ function OrderCard({ o, scenarios, onChange }: { o: Order; scenarios: Scenario[]
           <div>{o.flag_reason}</div>
         </div>
       )}
+      <FindingsCard o={o} />
       <ProposedFix o={o} />
       {note && <div className="muted small note">{note}</div>}
 

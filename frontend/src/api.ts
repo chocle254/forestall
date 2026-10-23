@@ -34,6 +34,18 @@ export type Order = {
   action_params: Record<string, string | number | boolean> | null;
   action_justification: string | null;
   action_status: string | null;
+  findings: Findings | null;
+  tools_used: string[];
+};
+
+export type Findings = {
+  summary: string;
+  parcel_status: string;
+  likely_cause: string;
+  evidence: { source: string; fact: string }[];
+  buyer_need: string | null;
+  resolution_options: string[];
+  confidence: string;
 };
 
 export type Scenario = { id: string; label: string };

@@ -60,3 +60,12 @@ button.link.small { margin-top: 10px; font-size: 13px; color: var(--accent); }
 .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); white-space: nowrap; }
 .msg { white-space: pre-wrap; }
 .why { color: var(--text); }
+.findings { margin-top: 8px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+  border-left: 3px solid #6b4fd8; background: color-mix(in srgb, #6b4fd8 7%, var(--card)); }
+.findings > div + div, .findings > ul { margin-top: 6px; }
+.evidence { list-style: none; margin: 0; padding: 0; }
+.evidence li { padding: 2px 0; }
+.src { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 6px; border-radius: 4px;
+  margin-right: 4px; background: var(--border); color: var(--text); }
+.src-paypal { background: #003087; color: #fff; } .src-carrier { background: #5b6372; color: #fff; }
+.src-buyer { background: #ef8f00; color: #fff; }

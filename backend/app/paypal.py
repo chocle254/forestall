@@ -142,7 +142,7 @@ SANDBOX_TEST_CARD = {
 }
 
 
-async def create_card_order(item: dict, buyer_name: str) -> dict:
+async def create_card_order(item: dict, buyer_name: str, ship_to: dict | None = None) -> dict:
     """Create an order paid by the sandbox test card (no buyer redirect)."""
     if "sandbox" not in settings.paypal_base_url:
         raise PayPalError(400, "test-card orders are sandbox-only")
@@ -154,6 +154,8 @@ async def create_card_order(item: dict, buyer_name: str) -> dict:
                 "reference_id": item["sku"],
                 "description": item["name"],
                 "amount": {"currency_code": "USD", "value": amount},
+                **({"shipping": {"type": "SHIPPING", "name": {"full_name": buyer_name}, "address": ship_to}}
+                   if ship_to else {}),
             }
         ],
         "payment_source": {

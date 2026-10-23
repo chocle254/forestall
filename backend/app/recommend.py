@@ -1,4 +1,4 @@
-"""AI job 2 of 3: recommend ONE fix for a flagged order.
+"""AI job 3 of 4: recommend ONE fix for a flagged order, based on the investigation.
 
 The model picks the action and writes the words; the backend fills in every
 PayPal parameter from real order data and enforces limits, so the model can't
@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from . import ai, db, risk
+from . import ai, db, investigate, risk
 
 MAX_REFUND_SHARE = 0.25     # never propose refunding more than 25% of the order
 PAYPAL_NOTE_LIMIT = 255     # PayPal's note_to_payer limit
@@ -27,29 +27,31 @@ class Recommendation(BaseModel):
     refund_amount: float | None = Field(default=None, description="partial_refund only: amount in the order currency.")
 
 
-SYSTEM = """You are Forestall's resolution agent. A small online seller's PayPal order has been flagged as at risk
-of an "item not received" (INR) dispute. Recommend exactly ONE fix the seller can approve with one tap.
+SYSTEM = """You are Forestall's resolution agent. A PayPal order is at risk of an "item not received" (INR)
+dispute, and Forestall's investigator has already found out what happened (the findings). Recommend exactly ONE
+fix the seller can approve with one tap. The goal is to resolve the buyer's problem today, so they have no
+reason to open a dispute.
 
 Available fixes:
 - attach_tracking: put the seller's existing tracking number on the PayPal transaction (PayPal also emails the
-  buyer the tracking). Only possible if the seller has a tracking number that is not yet on PayPal. This is the
-  strongest fix whenever it is possible: it gives the seller proof for any dispute.
-- message_buyer: a short, warm, specific message from the seller to the buyer (what is happening, what the
-  seller is doing, when to expect an update). Best when tracking is already on PayPal and the buyer is anxious,
-  the parcel is stalled, or delivery is disputed.
-- partial_refund: a small goodwill refund (at most {max_share}% of the order) with a short note. Only when the
-  buyer has been clearly inconvenienced (for example a long stall plus a worried buyer with a deadline).
-  Never as the first step for a simple missing-tracking problem.
+  buyer the tracking). Only possible if the seller has a tracking number that is not yet on PayPal. Always the
+  right fix when tracking is missing from PayPal: it gives the seller proof for any dispute.
+- message_buyer: a message from the seller that (1) tells the buyer what Forestall found, with specifics
+  (where the parcel is, what the carrier reports), and (2) gives a concrete resolution TODAY, taken from the
+  findings' resolution_options; if the buyer has a deadline the delay will miss, offer a choice
+  (for example "a replacement shipped today by Priority Mail, or a full refund; just reply 1 or 2").
+- partial_refund: a small goodwill refund (at most {max_share}% of the order) with a short note, when the buyer
+  was inconvenienced but the item is still coming.
 
-Write as the seller, in plain friendly English, no jargon. Rules for every message and note:
-- Say times in plain words ("a few days", "since Tuesday"), never raw hours like "79 hours".
-- Never claim the seller has already done something (contacted the carrier, opened an inquiry, reshipped).
-  Nothing has been done yet. You may say what the seller WILL do next, e.g. "I'm checking with USPS today
-  and will update you by tomorrow".
-- No promises the facts don't support (no guaranteed delivery dates). Never invent tracking numbers,
-  carriers, or facts.
-- Address the buyer by first name. Keep messages under 80 words.
-The justification is for the seller: one plain sentence, no raw hour counts."""
+Message rules:
+- Lead with the finding, then the resolution. Never end with only "I'll look into it" or "I'll update you
+  tomorrow": the buyer must leave the message with an answer or a choice they can act on now.
+- Be specific to THIS order: buyer's first name, the facility or city, what the carrier reported, the
+  buyer's stated need. No generic filler.
+- Times in plain words ("since Tuesday", "a few days"), never raw hours.
+- Never claim the seller already did something that hasn't happened. Offering to do it is fine.
+- Only offer what the findings' resolution_options allow. Under 90 words, warm and direct.
+The justification is for the seller: one plain sentence citing the key finding."""
 
 
 def _paypal_call(rtype: str, order) -> str:
@@ -102,8 +104,13 @@ async def recommend(order_id: str, force: bool = False) -> dict | None:
 
     order = await pool.fetchrow("select * from orders where id=$1", order_id)
     context = await risk.build_context(order_id)
+    # Investigate first (or reuse this flag's investigation if nothing changed since).
+    inv = await investigate.latest_for_flag(order_id, flag["id"])
+    if not inv or force or inv["created_at"] < flag["updated_at"]:
+        inv = await investigate.investigate(order_id)
     prompt = json.dumps({
         "flag": {"risk_level": flag["risk_level"], "signal": flag["signal"], "reason": flag["reason"]},
+        "findings": inv["findings"],
         "order": context,
         "buyer_name": order["buyer_name"],
         "seller_has_tracking_number_not_on_paypal": bool(order["tracking_number"]) and not order["tracking_attached_at"],
@@ -125,16 +132,18 @@ async def recommend(order_id: str, force: bool = False) -> dict | None:
         await conn.execute(
             "update actions set status='superseded', updated_at=now() where flag_id=$1 and status='proposed'", flag["id"])
         row = await conn.fetchrow(
-            """insert into actions (flag_id, order_id, type, params, justification, status, model)
-               values ($1,$2,$3,$4,$5,'proposed',$6) returning *""",
-            flag["id"], order_id, rec.type, json.dumps(params), rec.justification, ai.last_model_used or ai.model_name())
+            """insert into actions (flag_id, order_id, type, params, justification, status, model, investigation_id)
+               values ($1,$2,$3,$4,$5,'proposed',$6,$7) returning *""",
+            flag["id"], order_id, rec.type, json.dumps(params), rec.justification, ai.last_model_used or ai.model_name(),
+            inv["id"])
     return _out(row)
 
 
 def _out(row) -> dict:
     d = dict(row)
     d["params"] = json.loads(d["params"]) if isinstance(d["params"], str) else d["params"]
-    return {k: (str(v) if k in ("id", "flag_id", "order_id") and v is not None else v) for k, v in d.items()}
+    return {k: (str(v) if k in ("id", "flag_id", "order_id", "investigation_id") and v is not None else v)
+            for k, v in d.items()}
 
 
 async def supersede_for_order(conn, order_id) -> None:

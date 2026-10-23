@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from pydantic import BaseModel
 
-from . import ai, db, orders, paypal, recommend, risk, simulator, watcher
+from . import ai, db, investigate, orders, paypal, recommend, risk, simulator, watcher
 from .config import settings
 
 app = FastAPI(title="Forestall API", version="0.2.0")
@@ -62,13 +62,15 @@ async def list_orders():
                o.shipped_at, o.watch_status, o.next_check_at, o.demo_scenario,
                f.risk_level, f.signal, f.reason as flag_reason, f.updated_at as flagged_at,
                a.id as action_id, a.type as action_type, a.params as action_params,
-               a.justification as action_justification, a.status as action_status
+               a.justification as action_justification, a.status as action_status,
+               i.findings as findings, i.tool_calls as tool_calls
         from orders o
         left join flags f on f.order_id = o.id and not f.resolved
         left join lateral (
           select * from actions x where x.order_id = o.id and x.status = 'proposed'
           order by x.created_at desc limit 1
         ) a on true
+        left join investigations i on i.id = a.investigation_id
         order by o.captured_at desc limit 100
         """
     )
@@ -76,6 +78,9 @@ async def list_orders():
     for r in rows:
         d = dict(r)
         d["action_params"] = json.loads(d["action_params"]) if d["action_params"] else None
+        d["findings"] = json.loads(d["findings"]) if d["findings"] else None
+        calls = json.loads(d.pop("tool_calls")) if d["tool_calls"] else []
+        d["tools_used"] = [c["tool"] for c in calls]
         out.append(d)
     return out
 
@@ -107,6 +112,17 @@ async def ai_models():
     if not ai.configured():
         raise HTTPException(503, "AI is not configured")
     return {"current": ai.model_name(), "available": await ai.list_models()}
+
+
+@api.post("/orders/{order_id}/investigate")
+async def investigate_order(order_id: str):
+    """The agent investigates the order with tools and reports findings (with its tool-call trace)."""
+    try:
+        return await investigate.investigate(order_id)
+    except LookupError:
+        raise HTTPException(404, "order not found")
+    except ai.AIUnavailable as e:
+        raise HTTPException(503, str(e))
 
 
 @api.post("/orders/{order_id}/recommend")
@@ -272,14 +288,16 @@ async def create_card_test_order():
         raise HTTPException(503, "PayPal is not configured")
     item = random.choice(orders.CATALOG)
     buyer = random.choice(DEMO_BUYERS)
+    ship_to = random.choice(orders.DEMO_ADDRESSES)
     try:
-        order = await paypal.create_card_order(item, buyer)
+        order = await paypal.create_card_order(item, buyer, ship_to)
         if order.get("status") != "COMPLETED":
             order = await paypal.capture_order(order["id"])
     except paypal.PayPalError as e:
         raise HTTPException(502, {"paypal_status": e.status, "paypal_error": e.body})
     summary = orders.summarize_capture(order)
     summary["buyer_name"] = summary["buyer_name"] or buyer
+    summary["ship_to"] = summary.get("ship_to") or ship_to
     if summary.get("status") not in ("COMPLETED", "PENDING"):
         raise HTTPException(502, {"paypal_status": summary.get("status"), "paypal_order": order.get("id")})
     row = await orders.upsert(summary)
