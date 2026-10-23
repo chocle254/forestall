@@ -25,6 +25,9 @@ class Recommendation(BaseModel):
         description="message_buyer: the full message to send. partial_refund: a short note PayPal shows the buyer "
                     "(max 255 chars). attach_tracking: leave null.")
     refund_amount: float | None = Field(default=None, description="partial_refund only: amount in the order currency.")
+    offers: list[Literal["replacement", "full_refund", "partial_refund", "info_only"]] = Field(
+        default_factory=list,
+        description="What the buyer message offers. Must match the message text exactly.")
 
 
 SYSTEM = """You are Forestall's resolution agent. A PayPal order is at risk of an "item not received" (INR)
@@ -50,9 +53,10 @@ Message rules:
   buyer's stated need. No generic filler.
 - Times in plain words ("since Tuesday", "a few days"), never raw hours.
 - Never claim the seller already did something that hasn't happened. Offering to do it is fine.
-- Offer only what the findings' resolution_options allow for THIS situation, and never upgrade an option:
-  a goodwill refund stays a partial refund; a full refund is offered only if an option explicitly offers a
-  full refund now (for example a missed buyer deadline or a misdelivery). Under 90 words, warm and direct.
+- Offer only what "offers_allowed_now" lists (the seller's policy, decided from the facts), and declare in
+  "offers" exactly what your message offers. Never mention a full refund or a replacement unless it is allowed.
+  When only information and a small goodwill refund are allowed, explain the situation and what happens next
+  with a specific, fact-based expectation (for example the carrier's stated delay). Under 90 words.
 The justification is for the seller: one plain sentence citing the key finding."""
 
 
@@ -62,6 +66,39 @@ def _paypal_call(rtype: str, order) -> str:
     if rtype == "partial_refund":
         return f"POST /v2/payments/captures/{order['capture_id']}/refund"
     return "none (PayPal has no pre-dispute messaging API; the seller sends it, Forestall records it)"
+
+
+def allowed_offers(findings: dict, context: dict) -> set[str]:
+    """What the seller's policy allows Forestall to offer, decided in code from the facts (not by the model)."""
+    allowed = {"info_only", "partial_refund"}
+    status = findings.get("parcel_status")
+    stuck_days = (context.get("hours_since_last_carrier_scan") or 0) / 24
+    serious = (
+        bool(findings.get("buyer_need"))
+        or status in ("delivered_possibly_misdelivered", "possibly_lost")
+        or (status != "delivered_confirmed" and stuck_days >= 7)
+    )
+    if serious:
+        allowed |= {"replacement", "full_refund"}
+    elif status == "delayed_at_carrier" and context.get("order", {}).get("hours_since_payment", 0) >= 72:
+        allowed.add("replacement")  # past the expected delivery window: a replacement may be offered
+    return allowed
+
+
+def check_offers(rec: Recommendation, allowed: set[str]) -> None:
+    """Reject messages that offer more than the policy allows (declared or written)."""
+    if rec.type != "message_buyer":
+        return
+    text = (rec.buyer_message or "").lower()
+    offered = set(rec.offers)
+    if "full refund" in text or "refund in full" in text:
+        offered.add("full_refund")
+    if "replacement" in text or "send another" in text or "ship another" in text:
+        offered.add("replacement")
+    too_much = offered - allowed
+    if too_much:
+        raise ValueError(f"the message offers {sorted(too_much)}, which the seller policy does not allow here; "
+                         f"allowed: {sorted(allowed)}")
 
 
 def _build_params(rec: Recommendation, order) -> dict:
@@ -110,6 +147,7 @@ async def recommend(order_id: str, force: bool = False) -> dict | None:
     inv = await investigate.latest_for_flag(order_id, flag["id"])
     if not inv or force or inv["created_at"] < flag["updated_at"]:
         inv = await investigate.investigate(order_id)
+    allowed = allowed_offers(inv["findings"], context)
     prompt = json.dumps({
         "flag": {"risk_level": flag["risk_level"], "signal": flag["signal"], "reason": flag["reason"]},
         "findings": inv["findings"],
@@ -117,17 +155,23 @@ async def recommend(order_id: str, force: bool = False) -> dict | None:
         "buyer_name": order["buyer_name"],
         "seller_has_tracking_number_not_on_paypal": bool(order["tracking_number"]) and not order["tracking_attached_at"],
         "max_refund": round(float(order["amount"]) * MAX_REFUND_SHARE, 2),
+        "offers_allowed_now": sorted(allowed),
     }, indent=2, default=str)
     system = SYSTEM.replace("{max_share}", str(int(MAX_REFUND_SHARE * 100)))
 
     rec = await ai.chat_json(system, "Recommend one fix for this flagged order:\n" + prompt, Recommendation)
     try:
+        check_offers(rec, allowed)
         params = _build_params(rec, order)
     except ValueError as e:
         # Tell the model what was wrong once, then accept only a valid answer.
         rec = await ai.chat_json(system, f"Recommend one fix for this flagged order:\n{prompt}\n\n"
                                  f"Your previous answer was not possible: {e}. Choose again.", Recommendation)
+        check_offers(rec, allowed)
         params = _build_params(rec, order)
+    if rec.type == "message_buyer":
+        params["offers"] = sorted(set(rec.offers) or {"info_only"})
+        params["offers_allowed"] = sorted(allowed)
     params["paypal_call"] = _paypal_call(rec.type, order)
 
     async with pool.acquire() as conn, conn.transaction():
