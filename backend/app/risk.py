@@ -33,9 +33,13 @@ Signals (pick the single strongest one):
 - delivered_not_received: the carrier says delivered but the buyer says they did not get it.
 - none: nothing worrying yet.
 
+When several signals apply, a buyer who has written in worried is the closest thing to a dispute:
+choose buyer_concern, and rate it high if the parcel is also stalled or untracked.
+
 Risk level: high = a dispute is likely without action now; medium = action recommended soon;
 low = no action needed. Use the precomputed hour counts; do not do your own date arithmetic.
-Write the reason for the seller: specific, calm, no jargon, under 45 words. Never invent facts."""
+Write the reason for the seller: specific, calm, under 45 words. Say times in plain words
+("about 3 days", "yesterday"), never as raw hours like "68 h". Never invent facts."""
 
 
 def _hours(a: datetime, b: datetime) -> float:
