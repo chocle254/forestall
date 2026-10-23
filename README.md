@@ -136,8 +136,17 @@ PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREAT
 
 1. Open https://forestall-gamma.vercel.app
 2. Tap **Quick test order**. PayPal (sandbox) captures a payment with its test card, and no login is needed.
-3. Under the new order, pick a delivery story (for example *Parcel stuck at a hub for 4 days*) and tap **Simulate + assess**.
-4. The AI flags the order with a risk level and a plain-language reason.
+3. On the new order, pick a delivery story (for example *Seller forgets to add tracking to PayPal*) and tap **Mark shipped**.
+4. Tap **Advance 1 day** a few times. Forestall re-checks the order each day and flags it the moment a risk appears, with a plain-language reason.
+5. Tap **Show timeline** to see every step Forestall took, including PayPal's own confirmations.
+
+## How Forestall follows an order
+
+- **Watch starts at "shipped".** From then on the order is checked whenever something happens (a carrier scan, a buyer message, a seller action) **and** whenever time alone creates risk: 48h without tracking on PayPal, 72h without a carrier scan, and 24h after delivery. Each check stores when the next threshold is crossed (`next_check_at`), so the scheduler only touches orders that are due.
+- **Scheduler:** GitHub Actions calls `/api/watch/tick` every 15 minutes (`.github/workflows/watch.yml`), with a daily Vercel Cron as backup. Both authenticate with `CRON_SECRET`.
+- **Protected** means delivered, no open risk after a quiet day, and tracking **read back from PayPal** (`GET /v2/checkout/orders/{id}` shows the tracker on the transaction). That proof is what wins an INR dispute.
+- **Audit trail:** every payment, scan, message, AI check (with its reason), flag and PayPal response is written to `order_timeline`. `/api/report` sums it up: orders watched, checks run, risks caught, PayPal confirmations, and the % of shipped orders with proof on PayPal.
+- **Limit:** in the sandbox this proves the mechanism (every order followed, every risk caught, every fix confirmed by PayPal). Measuring real dispute reduction needs live sellers.
 
 ## AI
 
@@ -161,7 +170,7 @@ Local frontend: `cd frontend && npm install && VITE_API_URL=http://localhost:800
 - [x] 1. Skeleton: API, frontend, schema, health check — live at https://forestall-gamma.vercel.app
 - [x] 2. PayPal sandbox auth + test order (PayPal checkout, or one-tap test-card order)
 - [ ] 3. Capture webhook intake
-- [~] 4. Delivery simulator (5 scripted scenarios done; scheduled runner pending)
+- [x] 4. Delivery simulator + watcher (scripted stories over simulated days; scheduled sweep)
 - [x] 5. AI assess (Groq `openai/gpt-oss-120b`, Qwen fallback)
 - [ ] 6. AI recommend
 - [ ] 7. Approve and execute
