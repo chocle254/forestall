@@ -102,7 +102,7 @@ async def assess(order_id: str, force: bool = False) -> dict:
         result = a.model_dump()
         assessment_id = await pool.fetchval(
             "insert into assessments (order_id, input_hash, input, result, model) values ($1,$2,$3,$4,$5) returning id",
-            order_id, input_hash, json.dumps(context), json.dumps(result), ai.model_name(),
+            order_id, input_hash, json.dumps(context), json.dumps(result), ai.last_model_used or ai.model_name(),
         )
 
     flag = await _sync_flag(order_id, assessment_id, result)

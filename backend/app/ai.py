@@ -27,7 +27,29 @@ def model_name() -> str:
     return settings.ai_model
 
 
+async def _complete(model: str, messages: list[dict]) -> httpx.Response:
+    body: dict = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+    }
+    if model.startswith("openai/gpt-oss"):
+        body["reasoning_effort"] = "low"  # short answers; keeps us well inside free-tier token limits
+    async with httpx.AsyncClient(timeout=60) as client:
+        return await client.post(
+            f"{settings.ai_base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key()}"},
+            json=body,
+        )
+
+
+# Model that produced the most recent answer (main or fallback), for the audit trail.
+last_model_used: str = ""
+
+
 async def chat_json(system: str, user: str, schema: type[T], attempts: int = 2) -> T:
+    global last_model_used
     if not configured():
         raise AIUnavailable("AI is not configured (set GROQ_API_KEY)")
     messages = [
@@ -35,37 +57,33 @@ async def chat_json(system: str, user: str, schema: type[T], attempts: int = 2) 
          + json.dumps(schema.model_json_schema())},
         {"role": "user", "content": user},
     ]
+    models = [m for m in (settings.ai_model, settings.ai_fallback_model) if m]
     last_error = ""
-    for _ in range(attempts):
-        try:
-            async with httpx.AsyncClient(timeout=45) as client:
-                r = await client.post(
-                    f"{settings.ai_base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key()}"},
-                    json={
-                        "model": settings.ai_model,
-                        "messages": messages,
-                        "temperature": 0.2,
-                        "response_format": {"type": "json_object"},
-                    },
-                )
-        except httpx.HTTPError as e:
-            raise AIUnavailable(f"AI request failed: {type(e).__name__}") from e
-        if r.status_code == 429:
-            raise AIUnavailable("AI rate limit reached; try again in a minute")
-        if r.status_code >= 400:
-            raise AIUnavailable(f"AI returned {r.status_code}: {r.text[:200]}")
-        content = r.json()["choices"][0]["message"]["content"]
-        try:
-            return schema.model_validate_json(content)
-        except ValidationError as e:
-            last_error = str(e)[:300]
-            # Show the model its mistake once, then give up.
-            messages += [
-                {"role": "assistant", "content": content},
-                {"role": "user", "content": f"That JSON did not match the schema: {last_error}. Reply again with valid JSON only."},
-            ]
-    raise AIUnavailable(f"AI returned invalid JSON: {last_error}")
+    for model in models:
+        for _ in range(attempts):
+            try:
+                r = await _complete(model, messages)
+            except httpx.HTTPError as e:
+                last_error = f"request failed: {type(e).__name__}"
+                break  # try the fallback model
+            if r.status_code in (404, 429) or r.status_code >= 500:
+                last_error = f"{model} returned {r.status_code}"
+                break  # retired / rate limited / overloaded: try the fallback model
+            if r.status_code >= 400:
+                raise AIUnavailable(f"AI returned {r.status_code}: {r.text[:200]}")
+            content = r.json()["choices"][0]["message"]["content"] or ""
+            try:
+                result = schema.model_validate_json(content)
+                last_model_used = model
+                return result
+            except ValidationError as e:
+                last_error = str(e)[:300]
+                # Show the model its mistake once, then move on.
+                messages = messages[:2] + [
+                    {"role": "assistant", "content": content},
+                    {"role": "user", "content": f"That JSON did not match the schema: {last_error}. Reply again with valid JSON only."},
+                ]
+    raise AIUnavailable(f"AI unavailable: {last_error}")
 
 
 async def check() -> str:
