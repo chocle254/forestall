@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from . import ai, db
 
-Signal = Literal["no_tracking", "stalled", "buyer_concern", "delivered_not_received", "none"]
+Signal = Literal["no_tracking", "stalled", "buyer_concern", "delivered_not_received", "carrier_exception", "none"]
 
 
 class Assessment(BaseModel):
@@ -31,10 +31,13 @@ Signals (pick the single strongest one):
 - stalled: the carrier has shown no new scan for 72 hours or more and the parcel is not delivered.
 - buyer_concern: the buyer has written in a worried or frustrated way about where their order is.
 - delivered_not_received: the carrier says delivered but the buyer says they did not get it.
+- carrier_exception: the carrier itself reports a problem: a "failure", "return_to_sender" or "error" status,
+  or a scan message about a failed delivery, a bad address, a lost or damaged parcel. This is high risk:
+  the parcel will not arrive without action.
 - none: nothing worrying yet.
 
-When several signals apply, a buyer who has written in worried is the closest thing to a dispute:
-choose buyer_concern, and rate it high if the parcel is also stalled or untracked.
+When several signals apply: a carrier_exception comes first (the parcel is not coming), then a buyer who
+has written in worried (choose buyer_concern, high if also stalled or untracked).
 
 Risk level: high = a dispute is likely without action now; medium = action recommended soon;
 low = no action needed. Use the precomputed hour counts; do not do your own date arithmetic.
@@ -53,7 +56,8 @@ async def build_context(order_id: str) -> dict:
     if not o:
         raise LookupError("order not found")
     events = await pool.fetch(
-        "select status, location, occurred_at from shipment_events where order_id = $1 order by occurred_at", order_id
+        "select status, location, occurred_at, message from shipment_events where order_id = $1 order by occurred_at",
+        order_id,
     )
     msgs = await pool.fetch(
         "select body, received_at from buyer_messages where order_id = $1 order by received_at", order_id
@@ -73,7 +77,8 @@ async def build_context(order_id: str) -> dict:
             "tracking_attached_to_paypal": o["tracking_attached_at"] is not None,
         },
         "carrier_scans": [
-            {"status": e["status"], "location": e["location"], "hours_after_payment": _hours(captured, e["occurred_at"])}
+            {"status": e["status"], "location": e["location"], "hours_after_payment": _hours(captured, e["occurred_at"]),
+             **({"carrier_message": e["message"]} if e["message"] else {})}
             for e in events
         ],
         "hours_since_last_carrier_scan": _hours(last_scan["occurred_at"], now) if last_scan else None,

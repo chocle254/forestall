@@ -22,6 +22,8 @@ SELLER_POLICY = {
                               "replacement or refund at once if the proof does not match the buyer's address.",
     "deadline_at_risk": "If the buyer has a deadline the carrier delay will miss, offer a same-day replacement "
                         "or a full refund, buyer's choice.",
+    "carrier_failure": "If the carrier reports a failed delivery or a return to sender, tell the buyer what the "
+                       "carrier reported and offer a same-day replacement or a full refund, buyer's choice.",
 }
 
 
@@ -32,8 +34,9 @@ class Evidence(BaseModel):
 
 class Findings(BaseModel):
     summary: str = Field(description="Two sentences max for the seller: what is going on and why.")
-    parcel_status: Literal["moving_normally", "delayed_at_carrier", "possibly_lost", "delivered_confirmed",
-                           "delivered_possibly_misdelivered", "not_on_paypal", "unknown"]
+    parcel_status: Literal["moving_normally", "delayed_at_carrier", "possibly_lost", "delivery_failed",
+                           "returning_to_sender", "delivered_confirmed", "delivered_possibly_misdelivered",
+                           "not_on_paypal", "unknown"]
     likely_cause: str
     evidence: list[Evidence] = Field(description="Specific facts from tool results, each with its source.")
     buyer_need: str | None = Field(default=None, description="Any deadline or need the buyer stated, else null.")

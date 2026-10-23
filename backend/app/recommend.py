@@ -75,7 +75,7 @@ def allowed_offers(findings: dict, context: dict) -> set[str]:
     stuck_days = (context.get("hours_since_last_carrier_scan") or 0) / 24
     serious = (
         bool(findings.get("buyer_need"))
-        or status in ("delivered_possibly_misdelivered", "possibly_lost")
+        or status in ("delivered_possibly_misdelivered", "possibly_lost", "delivery_failed", "returning_to_sender")
         or (status != "delivered_confirmed" and stuck_days >= 7)
     )
     if serious:

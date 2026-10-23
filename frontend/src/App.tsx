@@ -10,6 +10,7 @@ const SIGNAL_LABEL: Record<string, string> = {
   stalled: "Shipment stalled",
   buyer_concern: "Buyer worried",
   delivered_not_received: "Delivered, not received",
+  carrier_exception: "Carrier reports a problem",
 };
 
 const KIND_ICON: Record<string, string> = {
