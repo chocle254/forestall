@@ -143,6 +143,30 @@ async def create_test_order(request: Request):
     return {"paypal_order_id": order["id"], "item": item, "approve_url": link}
 
 
+DEMO_BUYERS = ["Amina Wanjiru", "Jordan Ruiz", "Priya Nair", "Tom Becker", "Grace Mensah", "Leo Tanaka"]
+
+
+@api.post("/demo/card-order")
+async def create_card_test_order():
+    """One tap: create + capture a sandbox order paid with PayPal's test card."""
+    if not paypal.configured():
+        raise HTTPException(503, "PayPal is not configured")
+    item = random.choice(orders.CATALOG)
+    buyer = random.choice(DEMO_BUYERS)
+    try:
+        order = await paypal.create_card_order(item, buyer)
+        if order.get("status") != "COMPLETED":
+            order = await paypal.capture_order(order["id"])
+    except paypal.PayPalError as e:
+        raise HTTPException(502, {"paypal_status": e.status, "paypal_error": e.body})
+    summary = orders.summarize_capture(order)
+    summary["buyer_name"] = summary["buyer_name"] or buyer
+    if summary.get("status") not in ("COMPLETED", "PENDING"):
+        raise HTTPException(502, {"paypal_status": summary.get("status"), "paypal_order": order.get("id")})
+    row = await orders.upsert(summary)
+    return {"order": row, "item": item, "paypal_status": summary.get("status")}
+
+
 @api.get("/paypal/return")
 async def paypal_return(token: str):
     """PayPal sends the buyer here after approval; `token` is the order ID."""

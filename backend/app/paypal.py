@@ -131,3 +131,43 @@ def approve_link(order: dict) -> str | None:
         if link.get("rel") in ("payer-action", "approve"):
             return link["href"]
     return None
+
+
+# Sandbox-only test card, used by the "quick test order" demo button so judges
+# can create a captured order without logging in to a sandbox buyer account.
+SANDBOX_TEST_CARD = {
+    "number": "4111111111111111",
+    "expiry": "2030-12",
+    "security_code": "123",
+}
+
+
+async def create_card_order(item: dict, buyer_name: str) -> dict:
+    """Create an order paid by the sandbox test card (no buyer redirect)."""
+    if "sandbox" not in settings.paypal_base_url:
+        raise PayPalError(400, "test-card orders are sandbox-only")
+    amount = f"{item['price']:.2f}"
+    body = {
+        "intent": "CAPTURE",
+        "purchase_units": [
+            {
+                "reference_id": item["sku"],
+                "description": item["name"],
+                "amount": {"currency_code": "USD", "value": amount},
+            }
+        ],
+        "payment_source": {
+            "card": {
+                **SANDBOX_TEST_CARD,
+                "name": buyer_name,
+                "billing_address": {
+                    "address_line_1": "2211 N First St",
+                    "admin_area_2": "San Jose",
+                    "admin_area_1": "CA",
+                    "postal_code": "95131",
+                    "country_code": "US",
+                },
+            }
+        },
+    }
+    return await request("POST", "/v2/checkout/orders", json=body, idempotency_key=str(uuid.uuid4()))
