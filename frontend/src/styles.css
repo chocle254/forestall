@@ -54,3 +54,9 @@ code { font-size: 13px; word-break: break-all; }
 .timeline .k-flag b { color: var(--warn); } .timeline .k-protected b, .timeline .k-paypal b { color: var(--good); }
 .quote { font-style: italic; }
 button.link.small { margin-top: 10px; font-size: 13px; color: var(--accent); }
+.fix { margin-top: 8px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+  border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--card)); }
+.fix > div + div { margin-top: 6px; }
+.chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); white-space: nowrap; }
+.msg { white-space: pre-wrap; }
+.why { color: var(--text); }

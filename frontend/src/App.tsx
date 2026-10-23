@@ -105,6 +105,45 @@ function Timeline({ id, version }: { id: string; version: number }) {
   );
 }
 
+const FIX_TITLE: Record<string, string> = {
+  attach_tracking: "Attach tracking to PayPal",
+  message_buyer: "Message the buyer",
+  partial_refund: "Goodwill partial refund",
+};
+
+function ProposedFix({ o }: { o: Order }) {
+  if (!o.action_type || !o.action_params) return null;
+  const p = o.action_params;
+  return (
+    <div className="fix">
+      <div className="row">
+        <b>Recommended fix · {FIX_TITLE[o.action_type]}</b>
+        <span className="chip">awaiting approval</span>
+      </div>
+      {o.action_type === "attach_tracking" && (
+        <div className="small">
+          {String(p.carrier)} <code>{String(p.tracking_number)}</code> goes onto the PayPal transaction, and PayPal
+          emails the buyer the tracking.
+        </div>
+      )}
+      {o.action_type === "partial_refund" && (
+        <div className="small">
+          Refund <b>${String(p.amount)}</b> ({String(p.share_of_order_pct)}% of the order) through PayPal.
+          {p.note_to_payer && <div className="quote">Note PayPal shows the buyer: “{String(p.note_to_payer)}”</div>}
+        </div>
+      )}
+      {o.action_type === "message_buyer" && (
+        <div className="small">
+          <div className="quote msg">“{String(p.message)}”</div>
+          <div className="muted">Sent by you; PayPal has no pre-dispute messaging API, so Forestall records it.</div>
+        </div>
+      )}
+      {o.action_justification && <div className="small why">Why: {o.action_justification}</div>}
+      <div className="small muted">PayPal call: <code>{String(p.paypal_call)}</code></div>
+    </div>
+  );
+}
+
 function OrderCard({ o, scenarios, onChange }: { o: Order; scenarios: Scenario[]; onChange: () => void }) {
   const [scenario, setScenario] = useState("no_tracking");
   const [busy, setBusy] = useState<string | null>(null);
@@ -156,6 +195,7 @@ function OrderCard({ o, scenarios, onChange }: { o: Order; scenarios: Scenario[]
           <div>{o.flag_reason}</div>
         </div>
       )}
+      <ProposedFix o={o} />
       {note && <div className="muted small note">{note}</div>}
 
       {o.watch_status === "not_shipped" && (

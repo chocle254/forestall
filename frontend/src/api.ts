@@ -29,6 +29,11 @@ export type Order = {
   next_check_at: string | null;
   demo_scenario: string | null;
   demo_shift_hours: number;
+  action_id: string | null;
+  action_type: "attach_tracking" | "message_buyer" | "partial_refund" | null;
+  action_params: Record<string, string | number | boolean> | null;
+  action_justification: string | null;
+  action_status: string | null;
 };
 
 export type Scenario = { id: string; label: string };

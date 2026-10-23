@@ -13,7 +13,7 @@ Every step is written to `order_timeline`, which is the proof that the order was
 import json
 from datetime import datetime, timedelta, timezone
 
-from . import ai, db, paypal, risk, simulator
+from . import ai, db, paypal, recommend, risk, simulator
 
 NO_TRACKING_AFTER = timedelta(hours=48)
 STALL_AFTER = timedelta(hours=72)
@@ -152,6 +152,13 @@ async def check(order_id: str, trigger: str = "scheduled") -> dict:
                       {"reason": flag["reason"], "signal": flag["signal"], "risk_level": flag["risk_level"]}, now)
         if prev_flag and not flag:
             await log(conn, order_id, "flag_cleared", "Risk cleared", {"previous_signal": prev_flag["signal"]}, now)
+            await recommend.supersede_for_order(conn, order_id)
+
+    proposal = None
+    if a["flag"]:
+        proposal = await _propose(order_id, now)
+
+    async with pool.acquire() as conn:
 
         events = await conn.fetch("select status, occurred_at from shipment_events where order_id=$1 order by occurred_at", order_id)
         delivered_at = next((e["occurred_at"] for e in events if e["status"] == "delivered"), None)
@@ -161,7 +168,7 @@ async def check(order_id: str, trigger: str = "scheduled") -> dict:
             proof = await _paypal_proof(o)
             await conn.execute("update orders set watch_status='protected', next_check_at=null where id=$1", order_id)
             await log(conn, order_id, "protected", "Watch closed: delivered with proof on PayPal", proof, now)
-            return {**_summary(a), "watch_status": "protected", "proof": proof}
+            return {**_summary(a), "watch_status": "protected", "proof": proof, "proposal": proposal}
 
         nxt = _next_check(o, events, delivered_at, now)
         scans_done, msgs_done = len(events), await conn.fetchval("select count(*) from buyer_messages where order_id=$1", order_id)
@@ -171,7 +178,34 @@ async def check(order_id: str, trigger: str = "scheduled") -> dict:
                 nxt = min(nxt, ev)
         wall = nxt - timedelta(hours=o["demo_shift_hours"]) + timedelta(minutes=1)
         await conn.execute("update orders set next_check_at=$2 where id=$1", order_id, wall)
-    return {**_summary(a), "watch_status": "watching", "next_check_in_hours": round((nxt - now).total_seconds() / 3600, 1)}
+    return {**_summary(a), "watch_status": "watching", "proposal": proposal,
+            "next_check_in_hours": round((nxt - now).total_seconds() / 3600, 1)}
+
+
+ACTION_TITLE = {
+    "attach_tracking": "Fix proposed: attach tracking to PayPal",
+    "message_buyer": "Fix proposed: message the buyer",
+    "partial_refund": "Fix proposed: goodwill partial refund",
+}
+
+
+async def _propose(order_id: str, now: datetime) -> dict | None:
+    """Ask the AI for a fix when a flag is new or changed; log it once."""
+    pool = await db.get_pool()
+    assert pool
+    before = await pool.fetchval("select id from actions where order_id=$1 and status='proposed'", order_id)
+    try:
+        p = await recommend.recommend(order_id)
+    except (ai.AIUnavailable, ValueError) as e:
+        async with pool.acquire() as conn:
+            await log(conn, order_id, "action", "Fix not proposed yet", {"error": str(e)}, now)
+        return None
+    if p and str(before) != p["id"]:
+        async with pool.acquire() as conn:
+            await log(conn, order_id, "action", ACTION_TITLE[p["type"]],
+                      {"action_id": p["id"], "type": p["type"], "justification": p["justification"],
+                       "params": p["params"]}, now)
+    return p
 
 
 def _summary(a: dict) -> dict:

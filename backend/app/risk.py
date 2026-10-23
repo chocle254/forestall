@@ -129,8 +129,11 @@ async def _sync_flag(order_id: str, assessment_id, r: dict) -> dict | None:
         insert into flags (order_id, risk_level, reason, signal, assessment_id)
         values ($1, $2, $3, $4, $5)
         on conflict (order_id) where not resolved do update set
+          updated_at = case when flags.signal is distinct from excluded.signal
+                              or flags.risk_level is distinct from excluded.risk_level
+                            then now() else flags.updated_at end,
           risk_level = excluded.risk_level, reason = excluded.reason, signal = excluded.signal,
-          assessment_id = excluded.assessment_id, updated_at = now()
+          assessment_id = excluded.assessment_id
         returning id, risk_level, reason, signal, created_at, updated_at
         """,
         order_id, r["risk_level"], r["reason"], r["signal"], assessment_id,

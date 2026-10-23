@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 
 from pydantic import BaseModel
 
-from . import ai, db, orders, paypal, risk, simulator, watcher
+from . import ai, db, orders, paypal, recommend, risk, simulator, watcher
 from .config import settings
 
 app = FastAPI(title="Forestall API", version="0.2.0")
@@ -54,13 +54,24 @@ async def list_orders():
         select o.id, o.paypal_order_id, o.capture_id, o.buyer_name, o.buyer_email, o.amount, o.currency,
                o.captured_at, o.tracking_number, o.tracking_attached_at, o.demo_shift_hours,
                o.shipped_at, o.watch_status, o.next_check_at, o.demo_scenario,
-               f.risk_level, f.signal, f.reason as flag_reason, f.updated_at as flagged_at
+               f.risk_level, f.signal, f.reason as flag_reason, f.updated_at as flagged_at,
+               a.id as action_id, a.type as action_type, a.params as action_params,
+               a.justification as action_justification, a.status as action_status
         from orders o
         left join flags f on f.order_id = o.id and not f.resolved
+        left join lateral (
+          select * from actions x where x.order_id = o.id and x.status = 'proposed'
+          order by x.created_at desc limit 1
+        ) a on true
         order by o.captured_at desc limit 100
         """
     )
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["action_params"] = json.loads(d["action_params"]) if d["action_params"] else None
+        out.append(d)
+    return out
 
 
 @api.get("/orders/{order_id}")
@@ -90,6 +101,20 @@ async def ai_models():
     if not ai.configured():
         raise HTTPException(503, "AI is not configured")
     return {"current": ai.model_name(), "available": await ai.list_models()}
+
+
+@api.post("/orders/{order_id}/recommend")
+async def recommend_fix(order_id: str, force: bool = False):
+    """AI proposes one fix for the order's open flag (slice 6)."""
+    try:
+        p = await recommend.recommend(order_id, force=force)
+    except ai.AIUnavailable as e:
+        raise HTTPException(503, str(e))
+    except ValueError as e:
+        raise HTTPException(422, f"AI could not produce a valid fix: {e}")
+    if p is None:
+        raise HTTPException(409, "order has no open flag")
+    return p
 
 
 # --- AI risk assessment (slice 5) --------------------------------------------
