@@ -125,7 +125,7 @@ One screen, built around a single workflow. It's a work queue, not a dashboard o
 | Path | What | Hosted on |
 |---|---|---|
 | `frontend/` | React (Vite) seller app | Vercel (service `frontend`) |
-| `backend/` | FastAPI: PayPal webhooks, AI calls, action execution, delivery simulator | Vercel (service `backend`, serves `/api/*`) |
+| `backend/` | FastAPI: PayPal + EasyPost integration, AI agent, watcher, delivery simulator | Vercel (service `backend`, serves `/api/*`) |
 | `backend/migrations/` | Postgres schema, applied automatically on first request | Neon (via Vercel Storage) |
 
 Both run in one Vercel project ([Vercel Services](https://vercel.com/docs/services), see `vercel.json`), so they deploy together on every push and share one URL.
@@ -147,6 +147,12 @@ PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREAT
 - **Protected** means delivered, no open risk after a quiet day, and tracking **read back from PayPal** (`GET /v2/checkout/orders/{id}` shows the tracker on the transaction). That proof is what wins an INR dispute.
 - **Audit trail:** every payment, scan, message, AI check (with its reason), flag and PayPal response is written to `order_timeline`. `/api/report` sums it up: orders watched, checks run, risks caught, PayPal confirmations, and the % of shipped orders with proof on PayPal.
 - **Limit:** in the sandbox this proves the mechanism (every order followed, every risk caught, every fix confirmed by PayPal). Measuring real dispute reduction needs live sellers.
+
+## Carrier data
+
+- **EasyPost (real carrier API, test mode).** Ship an order with an EasyPost test parcel (`EZ1000000001`…`EZ7000000007`: pre-transit, in transit, out for delivery, delivered, returned, failure, unknown). Forestall creates a real EasyPost tracker, stores the carrier scans, and EasyPost pushes later updates to `/api/webhooks/easypost` (HMAC-signed and verified; every delivery is logged in `webhook_log`). The investigating agent reads the live tracker. EasyPost's test trackers carry fixed historical dates, so in test mode only, Forestall shifts them (same order and spacing) to start just after payment.
+- **Simulated delivery stories** for situations EasyPost's canned test data can't show: a hub backlog, a misdelivery with GPS proof 380 m from the PayPal address, a buyer with a deadline. These are labelled "simulated" in the app.
+- In production, the agent's carrier tool calls EasyPost live (USPS, UPS, FedEx, DHL…) and the simulator goes away. The agent's code does not change.
 
 ## AI
 
