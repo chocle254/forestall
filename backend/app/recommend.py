@@ -50,7 +50,9 @@ Message rules:
   buyer's stated need. No generic filler.
 - Times in plain words ("since Tuesday", "a few days"), never raw hours.
 - Never claim the seller already did something that hasn't happened. Offering to do it is fine.
-- Only offer what the findings' resolution_options allow. Under 90 words, warm and direct.
+- Offer only what the findings' resolution_options allow for THIS situation, and never upgrade an option:
+  a goodwill refund stays a partial refund; a full refund is offered only if an option explicitly offers a
+  full refund now (for example a missed buyer deadline or a misdelivery). Under 90 words, warm and direct.
 The justification is for the seller: one plain sentence citing the key finding."""
 
 

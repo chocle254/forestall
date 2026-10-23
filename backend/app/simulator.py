@@ -127,13 +127,17 @@ def next_event_time(scenario: str, captured: datetime, scans_done: int, msgs_don
 
 # --- The "carrier API" the investigating agent calls ---------------------------
 
+def _t(d: datetime) -> str:
+    return d.strftime("%a %d %b %H:%M UTC")
+
+
 def carrier_tracking(order, scans: list, now: datetime) -> dict:
     """What a carrier tracking API would return for this parcel right now."""
     out = {
         "source": SOURCE,
         "carrier": order["carrier"],
         "tracking_number": order["tracking_number"],
-        "scans": [{"status": e["status"], "location": e["location"], "time": e["occurred_at"].isoformat()} for e in scans],
+        "scans": [{"status": e["status"], "location": e["location"], "time": _t(e["occurred_at"])} for e in scans],
         "latest_status": scans[-1]["status"] if scans else "no_scans",
     }
     scenario = order["demo_scenario"]
@@ -142,9 +146,9 @@ def carrier_tracking(order, scans: list, now: datetime) -> dict:
         return out
     s, captured = SCENARIOS[scenario], order["captured_at"]
     expected = captured + timedelta(hours=s["expected_delivery_h"])
-    out["expected_delivery"] = expected.isoformat()
+    out["expected_delivery"] = _t(expected)
     out["expected_delivery_passed"] = now > expected and out["latest_status"] != "delivered"
-    out["exceptions"] = [{"code": c, "text": t, "time": (captured + timedelta(hours=h)).isoformat()}
+    out["exceptions"] = [{"code": c, "text": t, "time": _t(captured + timedelta(hours=h))}
                          for h, c, t in s["exceptions"] if captured + timedelta(hours=h) <= now]
     if out["latest_status"] == "delivered":
         out["proof_of_delivery"] = s["delivery_proof"]

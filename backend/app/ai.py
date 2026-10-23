@@ -1,5 +1,6 @@
 """Calls to the LLM. Every call asks for JSON and is validated against a schema."""
 
+import asyncio
 import json
 from typing import TypeVar
 
@@ -27,6 +28,26 @@ def model_name() -> str:
     return settings.ai_model
 
 
+async def _post(body: dict, max_wait: float = 25.0) -> httpx.Response:
+    """POST to the chat API; on 429 wait as long as the provider asks (bounded) and retry."""
+    waited = 0.0
+    while True:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(f"{settings.ai_base_url}/chat/completions",
+                                  headers={"Authorization": f"Bearer {api_key()}"}, json=body)
+        if r.status_code != 429:
+            return r
+        try:
+            delay = float(r.headers.get("retry-after", "5"))
+        except ValueError:
+            delay = 5.0
+        delay = min(max(delay, 1.0), 15.0)
+        if waited + delay > max_wait:
+            return r
+        await asyncio.sleep(delay)
+        waited += delay
+
+
 async def _complete(model: str, messages: list[dict]) -> httpx.Response:
     body: dict = {
         "model": model,
@@ -36,12 +57,7 @@ async def _complete(model: str, messages: list[dict]) -> httpx.Response:
     }
     if model.startswith("openai/gpt-oss"):
         body["reasoning_effort"] = "low"  # short answers; keeps us well inside free-tier token limits
-    async with httpx.AsyncClient(timeout=60) as client:
-        return await client.post(
-            f"{settings.ai_base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key()}"},
-            json=body,
-        )
+    return await _post(body)
 
 
 # Model that produced the most recent answer (main or fallback), for the audit trail.
@@ -121,8 +137,9 @@ async def run_agent(system: str, user: str, tools: list[dict], handlers: dict, s
     global last_model_used
     if not configured():
         raise AIUnavailable("AI is not configured (set GROQ_API_KEY)")
-    final_instr = ("\n\nWhen you have enough evidence, reply with a single JSON object only (no prose) matching "
-                   "this JSON schema:\n" + json.dumps(schema.model_json_schema()))
+    final_instr = ("\n\nCall several tools at once when you can. When you have enough evidence, stop calling tools "
+                   "and write your answer as plain text in your reply: a single JSON object (no prose, and never a "
+                   "tool call named json) matching this JSON schema:\n" + json.dumps(schema.model_json_schema()))
     messages: list[dict] = [{"role": "system", "content": system + final_instr}, {"role": "user", "content": user}]
     trace: list[dict] = []
     models = [m for m in (settings.ai_model, settings.ai_fallback_model) if m]
@@ -133,11 +150,16 @@ async def run_agent(system: str, user: str, tools: list[dict], handlers: dict, s
         if model.startswith("openai/gpt-oss"):
             body["reasoning_effort"] = "low"
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                r = await client.post(f"{settings.ai_base_url}/chat/completions",
-                                      headers={"Authorization": f"Bearer {api_key()}"}, json=body)
+            r = await _post(body)
         except httpx.HTTPError as e:
             raise AIUnavailable(f"AI request failed: {type(e).__name__}") from e
+        if r.status_code == 400 and "tool_use_failed" in r.text:
+            # The model tried to call a tool that doesn't exist (gpt-oss sometimes "calls" json).
+            # It has finished investigating: write up the evidence gathered so far.
+            if trace:
+                break
+            messages.append({"role": "user", "content": "Use only the listed tools. Start with get_carrier_tracking."})
+            continue
         if (r.status_code in (404, 429) or r.status_code >= 500) and model != models[-1]:
             model = models[-1]  # switch to the fallback model and retry this step
             continue
