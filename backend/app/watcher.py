@@ -13,7 +13,7 @@ Every step is written to `order_timeline`, which is the proof that the order was
 import json
 from datetime import datetime, timedelta, timezone
 
-from . import ai, db, paypal, recommend, risk, simulator
+from . import ai, db, easypost, paypal, recommend, risk, simulator
 
 NO_TRACKING_AFTER = timedelta(hours=48)
 STALL_AFTER = timedelta(hours=72)
@@ -65,8 +65,8 @@ async def ship(order_id: str, scenario: str | None = None, carrier: str = "USPS"
         async with conn.transaction():
             await conn.execute(
                 """update orders set shipped_at=$2, tracking_number=$3, carrier=$4, demo_shift_hours=$5,
-                   demo_scenario=$6, watch_status='watching', next_check_at=now() where id=$1""",
-                order_id, shipped_at, tracking_number, carrier, shift, scenario,
+                   demo_scenario=$6, carrier_source=$7, watch_status='watching', next_check_at=now() where id=$1""",
+                order_id, shipped_at, tracking_number, carrier, shift, scenario, "simulator" if scenario else "manual",
             )
             await conn.execute("delete from shipment_events where order_id=$1", order_id)
             await conn.execute("delete from buyer_messages where order_id=$1", order_id)
@@ -76,6 +76,64 @@ async def ship(order_id: str, scenario: str | None = None, carrier: str = "USPS"
     if attach_to_paypal:
         await attach_tracking(order_id, actor="seller")
     return await check(order_id, trigger="shipped")
+
+
+async def ship_with_easypost(order_id: str, tracking_code: str, carrier: str = "USPS",
+                             attach_to_paypal: bool = True, webhook_url: str | None = None) -> dict:
+    """Ship with a real EasyPost tracker; EasyPost's carrier data drives the watch."""
+    pool = await db.get_pool()
+    assert pool
+    o = await pool.fetchrow("select * from orders where id=$1", order_id)
+    if not o:
+        raise LookupError("order not found")
+    if o["watch_status"] != "not_shipped":
+        raise ValueError("order is already shipped")
+    if webhook_url:
+        try:
+            await easypost.ensure_webhook(webhook_url)
+        except easypost.EasyPostError:
+            pass  # tracking still works by polling; the webhook is a bonus
+    tracker = await easypost.create_tracker(tracking_code, carrier)
+    now = datetime.now(timezone.utc)
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            """update orders set shipped_at=$2, tracking_number=$3, carrier=$4, carrier_source='easypost',
+               easypost_tracker_id=$5, tracking_public_url=$6, demo_scenario=null, demo_shift_hours=0,
+               watch_status='watching', next_check_at=now() where id=$1""",
+            order_id, now, tracking_code, tracker.get("carrier") or carrier, tracker["id"], tracker.get("public_url"))
+        await conn.execute("delete from shipment_events where order_id=$1", order_id)
+        await log(conn, order_id, "shipped", f"Marked shipped · {tracker.get('carrier') or carrier} {tracking_code} (EasyPost)",
+                  {"carrier": carrier, "tracking_number": tracking_code, "easypost_tracker": tracker["id"],
+                   "public_url": tracker.get("public_url")}, now)
+    await ingest_easypost(order_id, tracker)
+    if attach_to_paypal:
+        await attach_tracking(order_id, actor="seller")
+    return await check(order_id, trigger="shipped")
+
+
+async def ingest_easypost(order_id, tracker: dict) -> int:
+    """Store EasyPost scans we haven't seen yet and put them on the timeline. Returns how many were new."""
+    pool = await db.get_pool()
+    assert pool
+    new = 0
+    async with pool.acquire() as conn, conn.transaction():
+        for e in easypost.details_to_events(tracker):
+            if not e["occurred_at"]:
+                continue
+            at = datetime.fromisoformat(e["occurred_at"].replace("Z", "+00:00"))
+            inserted = await conn.fetchval(
+                """insert into shipment_events (order_id, status, location, occurred_at, source, message)
+                   values ($1,$2,$3,$4,'easypost',$5) on conflict do nothing returning id""",
+                order_id, e["status"], e["location"], at, e["message"])
+            if inserted:
+                new += 1
+                where = f" · {e['location']}" if e["location"] else ""
+                await log(conn, order_id, "delivered" if e["status"] == "delivered" else "scan",
+                          f"Carrier (EasyPost): {e['status'].replace('_', ' ')}{where}",
+                          {"status": e["status"], "message": e["message"], "source": "easypost"}, at)
+        if new:
+            await conn.execute("update orders set next_check_at=now() where id=$1", order_id)
+    return new
 
 
 async def attach_tracking(order_id: str, actor: str) -> dict:

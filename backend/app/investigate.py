@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from . import ai, db, paypal, simulator
+from . import ai, db, easypost, paypal, simulator
 
 # Default seller policy. It decides what Forestall may offer a buyer *today*,
 # so a message can resolve the problem instead of promising to "get back to you".
@@ -90,11 +90,16 @@ async def investigate(order_id: str) -> dict:
     now = datetime.now(timezone.utc) + timedelta(hours=order["demo_shift_hours"])
 
     async def get_carrier_tracking():
+        if order["carrier_source"] == "easypost" and order["easypost_tracker_id"]:
+            return easypost.summarize(await easypost.get_tracker(order["easypost_tracker_id"]))
         scans = await pool.fetch(
             "select status, location, occurred_at from shipment_events where order_id=$1 order by occurred_at", order_id)
         return simulator.carrier_tracking(order, scans, now)
 
     async def get_carrier_facility_status(location: str = ""):
+        if order["carrier_source"] == "easypost":
+            return {"source": "EasyPost", "location": location,
+                    "alerts": "EasyPost does not publish facility alerts; rely on the tracker's status_detail."}
         return simulator.network_status(order, location, now)
 
     async def get_paypal_order():

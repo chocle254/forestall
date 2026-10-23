@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import {
   advanceOrder, checkOrder, createCardOrder, createTestOrder, getHealth, getOrders, getReport,
-  getScenarios, getTimeline, nudgeWatcher, shipOrder,
-  type Health, type Order, type Report, type Scenario, type TimelineItem,
+  getEasyPostCodes, getScenarios, getTimeline, nudgeWatcher, shipOrder,
+  type Health, type Order, type Report, type Scenario, type ShipChoice, type TimelineItem,
 } from "./api";
 
 const SIGNAL_LABEL: Record<string, string> = {
@@ -180,8 +180,18 @@ function ProposedFix({ o }: { o: Order }) {
   );
 }
 
-function OrderCard({ o, scenarios, onChange }: { o: Order; scenarios: Scenario[]; onChange: () => void }) {
-  const [scenario, setScenario] = useState("no_tracking");
+type EpCode = { code: string; label: string };
+
+function parseChoice(v: string): ShipChoice {
+  if (v.startsWith("sim:")) return { kind: "sim", scenario: v.slice(4) };
+  if (v.startsWith("ep:")) return { kind: "ep", code: v.slice(3) };
+  return { kind: "manual" };
+}
+
+function OrderCard({ o, scenarios, epCodes, onChange }: {
+  o: Order; scenarios: Scenario[]; epCodes: EpCode[]; onChange: () => void;
+}) {
+  const [scenario, setScenario] = useState("sim:no_tracking");
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -222,6 +232,11 @@ function OrderCard({ o, scenarios, onChange }: { o: Order; scenarios: Scenario[]
       <div className="muted small">
         Paid {when(o.captured_at)}
         {o.shipped_at && <> · {o.tracking_attached_at ? "Tracking on PayPal ✓" : "Tracking NOT on PayPal"}</>}
+        {o.shipped_at && (
+          <> · carrier data: {o.carrier_source === "easypost"
+            ? (o.tracking_public_url ? <a href={o.tracking_public_url} target="_blank" rel="noreferrer">EasyPost (live)</a> : "EasyPost (live)")
+            : o.carrier_source === "simulator" ? "simulated" : "manual"}</>
+        )}
         {o.watch_status === "watching" && o.next_check_at && <> · next check {when(o.next_check_at)}</>}
       </div>
 
@@ -238,17 +253,23 @@ function OrderCard({ o, scenarios, onChange }: { o: Order; scenarios: Scenario[]
       {o.watch_status === "not_shipped" && (
         <div className="sim">
           <select value={scenario} onChange={(e) => setScenario(e.target.value)} disabled={!!busy}>
-            {scenarios.map((s) => <option key={s.id} value={s.id}>Demo: {s.label}</option>)}
-            <option value="">Real shipment (attach tracking to PayPal now)</option>
+            <optgroup label="Delivery stories (simulated carrier)">
+              {scenarios.map((s) => <option key={s.id} value={`sim:${s.id}`}>{s.label}</option>)}
+            </optgroup>
+            {epCodes.length > 0 && (
+              <optgroup label="Real carrier API: EasyPost test parcels">
+                {epCodes.map((c) => <option key={c.code} value={`ep:${c.code}`}>EasyPost · {c.label}</option>)}
+              </optgroup>
+            )}
           </select>
-          <button onClick={() => act("ship", () => shipOrder(o.id, scenario || null))} disabled={!!busy}>
+          <button onClick={() => act("ship", () => shipOrder(o.id, parseChoice(scenario)))} disabled={!!busy}>
             {busy === "ship" ? "Shipping…" : "Mark shipped"}
           </button>
         </div>
       )}
       {o.watch_status === "watching" && (
         <div className="sim">
-          {o.demo_scenario && (
+          {(
             <button onClick={() => act("advance", () => advanceOrder(o.id, 24))} disabled={!!busy}>
               {busy === "advance" ? "AI is checking…" : "Advance 1 day ⏩"}
             </button>
@@ -274,6 +295,7 @@ export default function App() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [report, setReport] = useState<Report | null>(null);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [epCodes, setEpCodes] = useState<EpCode[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [quickNote, setQuickNote] = useState<string | null>(null);
@@ -286,6 +308,7 @@ export default function App() {
     setError(null);
     getHealth().then(setHealth).catch((e) => setError(String(e.message ?? e)));
     getScenarios().then(setScenarios).catch(() => {});
+    getEasyPostCodes().then(setEpCodes).catch(() => {});
     refresh();
   };
   useEffect(() => {
@@ -355,7 +378,7 @@ export default function App() {
         </p>
         {orders.length === 0 && <p className="muted">No orders yet.</p>}
         <ul className="orders">
-          {orders.map((o) => <OrderCard key={o.id} o={o} scenarios={scenarios} onChange={refresh} />)}
+          {orders.map((o) => <OrderCard key={o.id} o={o} scenarios={scenarios} epCodes={epCodes} onChange={refresh} />)}
         </ul>
       </section>
 
@@ -369,6 +392,7 @@ export default function App() {
             <Pill label="PayPal" value={health.paypal} />
             <Pill label="PayPal mode" value={health.paypal_env} />
             <Pill label={`AI (${health.ai_model})`} value={health.ai} />
+            <Pill label={`Carrier API (EasyPost${health.easypost_mode ? ", " + health.easypost_mode : ""})`} value={health.easypost} />
           </>
         )}
         <button className="secondary" onClick={load}>Recheck</button>

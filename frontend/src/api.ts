@@ -8,6 +8,8 @@ export type Health = {
   paypal_env: string;
   ai: string;
   ai_model: string;
+  easypost: string;
+  easypost_mode: string | null;
 };
 
 export type Order = {
@@ -34,6 +36,9 @@ export type Order = {
   action_params: Record<string, string | number | boolean> | null;
   action_justification: string | null;
   action_status: string | null;
+  carrier_source: "simulator" | "easypost" | "manual";
+  tracking_public_url: string | null;
+  carrier: string | null;
   findings: Findings | null;
   tools_used: string[];
 };
@@ -108,8 +113,11 @@ const post = <T,>(path: string, body?: unknown) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-export const shipOrder = (id: string, scenario: string | null) =>
-  post<CheckResult>(`/api/orders/${id}/ship`, scenario ? { scenario } : {});
+export type ShipChoice = { kind: "sim"; scenario: string } | { kind: "ep"; code: string } | { kind: "manual" };
+export const shipOrder = (id: string, c: ShipChoice) =>
+  post<CheckResult>(`/api/orders/${id}/ship`,
+    c.kind === "sim" ? { scenario: c.scenario } : c.kind === "ep" ? { easypost_code: c.code } : {});
+export const getEasyPostCodes = () => call<{ code: string; label: string }[]>("/api/easypost/test-codes");
 export const advanceOrder = (id: string, hours = 24) => post<CheckResult>(`/api/orders/${id}/advance?hours=${hours}`);
 export const checkOrder = (id: string) => post<CheckResult>(`/api/orders/${id}/check`);
 export const getTimeline = (id: string) => call<TimelineItem[]>(`/api/orders/${id}/timeline`);

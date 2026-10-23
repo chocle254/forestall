@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from pydantic import BaseModel
 
-from . import ai, db, investigate, orders, paypal, recommend, risk, simulator, watcher
+from . import ai, db, easypost, investigate, orders, paypal, recommend, risk, simulator, watcher
 from .config import settings
 
 app = FastAPI(title="Forestall API", version="0.2.0")
@@ -47,6 +47,8 @@ async def health():
         "paypal_env": "sandbox" if "sandbox" in settings.paypal_base_url else "live",
         "ai": await ai.check(),
         "ai_model": ai.model_name(),
+        "easypost": await easypost.check(),
+        "easypost_mode": "test" if easypost.test_mode() else ("live" if easypost.configured() else None),
     }
 
 
@@ -60,6 +62,7 @@ async def list_orders():
         select o.id, o.paypal_order_id, o.capture_id, o.buyer_name, o.buyer_email, o.amount, o.currency,
                o.captured_at, o.tracking_number, o.tracking_attached_at, o.demo_shift_hours,
                o.shipped_at, o.watch_status, o.next_check_at, o.demo_scenario,
+               o.carrier_source, o.tracking_public_url, o.carrier,
                f.risk_level, f.signal, f.reason as flag_reason, f.updated_at as flagged_at,
                a.id as action_id, a.type as action_type, a.params as action_params,
                a.justification as action_justification, a.status as action_status,
@@ -159,7 +162,8 @@ async def list_scenarios():
 
 
 class ShipIn(BaseModel):
-    scenario: str | None = None          # demo: play a scripted delivery story
+    scenario: str | None = None          # demo: play a scripted delivery story (simulated carrier)
+    easypost_code: str | None = None     # ship with a real EasyPost tracker (test codes EZ1000000001...)
     carrier: str = "USPS"
     tracking_number: str | None = None
     attach_to_paypal: bool | None = None  # default: scenario decides; real shipments attach
@@ -178,8 +182,20 @@ def _watch_errors(e: Exception):
 
 
 @api.post("/orders/{order_id}/ship")
-async def ship_order(order_id: str, body: ShipIn):
+async def ship_order(order_id: str, body: ShipIn, request: Request):
     """Mark shipped and start watching. Forestall follows the order from here."""
+    if body.easypost_code:
+        if not easypost.configured():
+            raise HTTPException(503, "EasyPost is not configured")
+        try:
+            return await watcher.ship_with_easypost(
+                order_id, body.easypost_code, body.carrier,
+                attach_to_paypal=body.attach_to_paypal if body.attach_to_paypal is not None else True,
+                webhook_url=f"{_origin(request)}/api/webhooks/easypost")
+        except easypost.EasyPostError as e:
+            raise HTTPException(502, {"easypost_status": e.status, "easypost_error": e.body})
+        except Exception as e:
+            _watch_errors(e)
     try:
         attach = body.attach_to_paypal if body.attach_to_paypal is not None else (None if body.scenario else True)
         return await watcher.ship(order_id, body.scenario, body.carrier, body.tracking_number, attach)
@@ -227,6 +243,32 @@ async def watch_tick():
     calls cost nothing.
     """
     return await watcher.sweep()
+
+
+@api.get("/easypost/test-codes")
+async def easypost_test_codes():
+    return [{"code": k, "label": v} for k, v in easypost.TEST_CODES.items()] if easypost.test_mode() else []
+
+
+@api.post("/webhooks/easypost")
+async def easypost_webhook(request: Request):
+    """EasyPost pushes carrier updates here. Signed with HMAC; we store new scans and schedule a check."""
+    raw = await request.body()
+    if not easypost.verify_signature(raw, request.headers.get("x-hmac-signature")):
+        raise HTTPException(401, "bad signature")
+    event = json.loads(raw)
+    tracker = event.get("result") or {}
+    if tracker.get("object") != "Tracker":
+        return {"ignored": event.get("description")}
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(503, "database not configured")
+    oid = await pool.fetchval("select id from orders where easypost_tracker_id=$1", tracker.get("id"))
+    if not oid:
+        return {"ignored": "unknown tracker"}
+    new = await watcher.ingest_easypost(oid, tracker)
+    # Answer EasyPost fast; the watcher checks the order on its next sweep (or when the app opens).
+    return {"order_id": str(oid), "new_scans": new}
 
 
 @api.get("/report")

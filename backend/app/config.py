@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Tried once if the main model is retired, overloaded or rate limited.
     ai_fallback_model: str = "qwen/qwen3.8-27b"
 
+    # EasyPost (carrier tracking). Test keys start with EZTK.
+    easypost_api_key: str = ""
+
     # Comma-separated origins allowed to call the API (the Vercel frontend).
     cors_origins: str = "http://localhost:5173"
 
