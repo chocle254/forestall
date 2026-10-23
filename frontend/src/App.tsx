@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  createTestOrder, getHealth, getOrders, getScenarios, simulate,
+  createCardOrder, createTestOrder, getHealth, getOrders, getScenarios, simulate,
   type Health, type Order, type Scenario,
 } from "./api";
 
@@ -118,6 +118,22 @@ export default function App() {
   const refreshOrders = () => getOrders().then(setOrders).catch(() => {});
   useEffect(load, []);
 
+  const [quickNote, setQuickNote] = useState<string | null>(null);
+  const quickBuy = async () => {
+    setBusy(true);
+    setError(null);
+    setQuickNote(null);
+    try {
+      const r = await createCardOrder();
+      setQuickNote(`PayPal captured $${Number(r.order.amount).toFixed(2)} from ${r.order.buyer_name} for “${r.item.name}”.`);
+      await refreshOrders();
+    } catch (e) {
+      setError(`Couldn't create the quick order: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const buy = async () => {
     setBusy(true);
     setError(null);
@@ -156,14 +172,20 @@ export default function App() {
       </section>
 
       <section className="card">
-        <h2>Test checkout</h2>
+        <h2>Create an order</h2>
         <p className="muted">
-          Creates a sandbox order and opens PayPal. Log in with your sandbox <b>personal</b> (buyer) account
-          and pay. You’ll come back here with the order captured.
+          <b>Quick test order</b> pays instantly with PayPal’s sandbox test card, no login needed.
+          <b> PayPal checkout</b> opens the real PayPal flow for a sandbox buyer account.
         </p>
-        <button onClick={buy} disabled={busy || health?.paypal !== "ok"}>
-          {busy ? "Opening PayPal…" : "Create test order"}
-        </button>
+        <div className="sim">
+          <button onClick={quickBuy} disabled={busy || health?.paypal !== "ok"}>
+            {busy ? "Working…" : "Quick test order"}
+          </button>
+          <button className="secondary" onClick={buy} disabled={busy || health?.paypal !== "ok"}>
+            PayPal checkout
+          </button>
+        </div>
+        {quickNote && <p className="good small">{quickNote}</p>}
       </section>
 
       <section className="card">

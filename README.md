@@ -132,6 +132,20 @@ Both run in one Vercel project ([Vercel Services](https://vercel.com/docs/servic
 
 PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREATED`; Orders v2 (read, track), Payments v2 (refund), Disputes v1 (read, provide-evidence).
 
+## Try it (judges)
+
+1. Open https://forestall-gamma.vercel.app
+2. Tap **Quick test order**. PayPal (sandbox) captures a payment with its test card, and no login is needed.
+3. Under the new order, pick a delivery story (for example *Parcel stuck at a hub for 4 days*) and tap **Simulate + assess**.
+4. The AI flags the order with a risk level and a plain-language reason.
+
+## AI
+
+- **Model:** `openai/gpt-oss-120b` on Groq (free tier), with `qwen/qwen3.8-27b` as automatic fallback. Any OpenAI-compatible API works via `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY`.
+- **Assess:** order facts (hours since payment, carrier scans, whether tracking is on PayPal, buyer messages) go in, and the model returns a risk level, signal, reason and the facts it used, validated against a JSON schema.
+- Every assessment is stored with its input and model (`assessments` table): an audit trail and a cache, so unchanged orders don't spend another AI call.
+- The AI never calls PayPal. It only proposes; the backend acts after the seller approves.
+
 ## Run and deploy
 
 1. Import this repo into Vercel at the repo root. `vercel.json` defines both services.
@@ -145,10 +159,10 @@ Local frontend: `cd frontend && npm install && VITE_API_URL=http://localhost:800
 ## Status
 
 - [x] 1. Skeleton: API, frontend, schema, health check — live at https://forestall-gamma.vercel.app
-- [ ] 2. PayPal sandbox auth + test order
+- [x] 2. PayPal sandbox auth + test order (PayPal checkout, or one-tap test-card order)
 - [ ] 3. Capture webhook intake
-- [ ] 4. Delivery simulator
-- [ ] 5. AI assess
+- [~] 4. Delivery simulator (5 scripted scenarios done; scheduled runner pending)
+- [x] 5. AI assess (Groq `openai/gpt-oss-120b`, Qwen fallback)
 - [ ] 6. AI recommend
 - [ ] 7. Approve and execute
 - [ ] 8. AG Grid risk queue

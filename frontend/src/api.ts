@@ -65,3 +65,5 @@ export const simulate = (orderId: string, scenario: string) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ scenario }),
   });
+export const createCardOrder = () =>
+  call<{ order: Order; item: { name: string }; paypal_status: string }>("/api/demo/card-order", { method: "POST" });
