@@ -84,6 +84,13 @@ async def order_detail(order_id: str):
     }
 
 
+@api.get("/ai/models")
+async def ai_models():
+    if not ai.configured():
+        raise HTTPException(503, "AI is not configured")
+    return {"current": ai.model_name(), "available": await ai.list_models()}
+
+
 # --- AI risk assessment (slice 5) --------------------------------------------
 
 @api.post("/orders/{order_id}/assess")

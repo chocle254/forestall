@@ -77,3 +77,11 @@ async def check() -> str:
         return "ok" if r.status_code == 200 else f"error_{r.status_code}"
     except httpx.HTTPError:
         return "unreachable"
+
+
+async def list_models() -> list[str]:
+    """Model IDs available to this key (helps pick a replacement when one is retired)."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(f"{settings.ai_base_url}/models", headers={"Authorization": f"Bearer {api_key()}"})
+    r.raise_for_status()
+    return sorted(m["id"] for m in r.json().get("data", []))
