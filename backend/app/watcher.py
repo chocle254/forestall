@@ -211,6 +211,8 @@ async def check(order_id: str, trigger: str = "scheduled") -> dict:
             new_events = await _reveal_demo_events(conn, o)
         prev_flag = await conn.fetchrow("select signal, risk_level from flags where order_id=$1 and not resolved", order_id)
 
+    await _follow_original_parcel(order_id)
+
     try:
         a = await risk.assess(order_id)
     except ai.AIUnavailable as e:
@@ -294,6 +296,32 @@ async def _propose(order_id: str, now: datetime) -> dict | None:
                       {"action_id": p["id"], "type": p["type"], "justification": p["justification"],
                        "params": p["params"]}, now)
     return p
+
+
+ORIGINAL_PARCEL_NEWS = {
+    "return_to_sender": "First parcel is on its way back to you (returned to sender). You can restock it.",
+    "delivered": "Heads-up: the first parcel was delivered after all. The buyer may now have two; consider asking "
+                 "them to return or keep it.",
+}
+
+
+async def _follow_original_parcel(order_id) -> None:
+    """After a replacement: keep an eye on the first parcel and tell the seller what becomes of it."""
+    pool = await db.get_pool()
+    assert pool
+    o = await pool.fetchrow("select * from orders where id=$1", order_id)
+    if not o or not o["original_easypost_tracker_id"] or not easypost.configured():
+        return
+    try:
+        t = await easypost.get_tracker(o["original_easypost_tracker_id"])
+    except easypost.EasyPostError:
+        return
+    status = t.get("status")
+    if status and status != o["original_parcel_status"]:
+        async with pool.acquire() as conn:
+            await conn.execute("update orders set original_parcel_status=$2 where id=$1", order_id, status)
+            await log(conn, order_id, "scan", ORIGINAL_PARCEL_NEWS.get(status, f"First parcel update: {status}"),
+                      {"tracking_number": o["original_tracking_number"], "status": status}, _now(o))
 
 
 def _summary(a: dict) -> dict:

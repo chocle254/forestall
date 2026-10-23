@@ -53,7 +53,7 @@ def _json(r: httpx.Response) -> Any:
         return r.text
 
 
-async def request(method: str, path: str, json: dict | None = None, idempotency_key: str | None = None) -> Any:
+async def request(method: str, path: str, json: dict | list | None = None, idempotency_key: str | None = None) -> Any:
     headers = {"Authorization": f"Bearer {await _access_token()}", "Content-Type": "application/json"}
     if idempotency_key:
         headers["PayPal-Request-Id"] = idempotency_key
@@ -207,3 +207,9 @@ async def refund_capture(capture_id: str, amount: str | None, currency: str, not
         body["note_to_payer"] = note_to_payer[:255]
     return await request("POST", f"/v2/payments/captures/{capture_id}/refund", json=body,
                          idempotency_key=idempotency_key)
+
+
+async def cancel_tracker(order_id: str, tracker_id: str) -> dict:
+    """Mark a tracker on the PayPal order as CANCELLED (e.g. the failed parcel after a replacement)."""
+    return await request("PATCH", f"/v2/checkout/orders/{order_id}/trackers/{tracker_id}",
+                         json=[{"op": "replace", "path": "/status", "value": "CANCELLED"}])

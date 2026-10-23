@@ -156,6 +156,21 @@ async def _execute(a, o, p) -> tuple[dict, str]:
     raise ValueError(f"unknown action type {kind}")
 
 
+async def _cancel_paypal_tracker(o, now) -> None:
+    pool = await db.get_pool()
+    assert pool
+    tracker_id = f"{o['capture_id']}-{o['tracking_number']}" if o["capture_id"] else None
+    if not tracker_id or not o["tracking_attached_at"]:
+        return
+    try:
+        res = await paypal.cancel_tracker(o["paypal_order_id"], tracker_id)
+        title, detail = "PayPal: first parcel's tracking marked CANCELLED", {"tracker_id": tracker_id, "paypal_response": res}
+    except paypal.PayPalError as e:
+        title, detail = "PayPal did not cancel the first parcel's tracking", {"tracker_id": tracker_id, "error": e.body}
+    async with pool.acquire() as conn:
+        await watcher.log(conn, o["id"], "paypal", title, detail, now)
+
+
 async def ship_replacement(o) -> dict:
     """Send a replacement: new tracking on the PayPal transaction, then keep watching the new parcel."""
     pool = await db.get_pool()
@@ -164,9 +179,21 @@ async def ship_replacement(o) -> dict:
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("update flags set resolved=true, updated_at=now() where order_id=$1 and not resolved", o["id"])
         await recommend.supersede_for_order(conn, o["id"])
-        # The watch now follows the replacement only; the first parcel's scans stay on the timeline.
+        # The watch now follows the replacement only; the first parcel's scans stay on the timeline,
+        # and the first parcel itself is still followed in the background.
+        last = await conn.fetchval(
+            "select status from shipment_events where order_id=$1 order by occurred_at desc limit 1", o["id"])
         await conn.execute("delete from shipment_events where order_id=$1", o["id"])
-        await conn.execute("update orders set replacement_shipped_at=$2 where id=$1", o["id"], now)
+        await conn.execute(
+            """update orders set replacement_shipped_at=$2, original_tracking_number=tracking_number,
+               original_easypost_tracker_id=easypost_tracker_id, original_parcel_status=$3 where id=$1""",
+            o["id"], now, last)
+        await watcher.log(conn, o["id"], "action", "To do: file a USPS loss claim for the first parcel",
+                          {"tracking_number": o["tracking_number"],
+                           "how": "usps.com/help/claims.htm (or your carrier account). Forestall keeps following "
+                                  "the first parcel and will tell you if it is returned or delivered late."}, now)
+    # Cancel the failed parcel's tracking on PayPal so the record shows one cancelled, one live parcel.
+    await _cancel_paypal_tracker(o, now)
     if easypost.configured():
         tracker = await easypost.create_tracker("EZ4000000004", o["carrier"] or "USPS")
         times = [datetime.fromisoformat(e["occurred_at"].replace("Z", "+00:00"))
