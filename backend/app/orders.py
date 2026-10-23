@@ -1,5 +1,6 @@
 """Store PayPal captures as Forestall orders."""
 
+import json
 from datetime import datetime
 from typing import Any
 
@@ -52,9 +53,16 @@ async def upsert(o: dict[str, Any]) -> dict:
           capture_id  = coalesce(excluded.capture_id, orders.capture_id),
           buyer_name  = coalesce(excluded.buyer_name, orders.buyer_name),
           buyer_email = coalesce(excluded.buyer_email, orders.buyer_email)
-        returning *
+        returning *, (xmax = 0) as inserted
         """,
         o["paypal_order_id"], o["capture_id"], o["buyer_name"], o["buyer_email"],
         str(o["amount"]), o["currency"], o["captured_at"],
     )
-    return dict(row)
+    if row["inserted"]:
+        await pool.execute(
+            "insert into order_timeline (order_id, kind, title, detail, occurred_at) values ($1,'paid',$2,$3,$4)",
+            row["id"], "Payment captured by PayPal",
+            json.dumps({"capture_id": row["capture_id"], "amount": str(row["amount"]), "currency": row["currency"]}),
+            row["captured_at"],
+        )
+    return {k: v for k, v in dict(row).items() if k != "inserted"}

@@ -1,8 +1,24 @@
 import { useEffect, useState } from "react";
 import {
-  createCardOrder, createTestOrder, getHealth, getOrders, getScenarios, simulate,
-  type Health, type Order, type Scenario,
+  advanceOrder, checkOrder, createCardOrder, createTestOrder, getHealth, getOrders, getReport,
+  getScenarios, getTimeline, shipOrder,
+  type Health, type Order, type Report, type Scenario, type TimelineItem,
 } from "./api";
+
+const SIGNAL_LABEL: Record<string, string> = {
+  no_tracking: "No tracking on PayPal",
+  stalled: "Shipment stalled",
+  buyer_concern: "Buyer worried",
+  delivered_not_received: "Delivered, not received",
+};
+
+const KIND_ICON: Record<string, string> = {
+  paid: "💳", shipped: "📦", scan: "🚚", delivered: "🏠", buyer_message: "💬", check: "🔎",
+  flag: "⚠️", flag_cleared: "✅", paypal: "🅿️", action: "👆", protected: "🛡️",
+};
+
+const money = (o: Order) => `${o.currency === "USD" ? "$" : o.currency + " "}${Number(o.amount).toFixed(2)}`;
+const when = (s: string) => new Date(s).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 function Pill({ label, value }: { label: string; value: string }) {
   const good = value === "ok" || value === "sandbox";
@@ -18,7 +34,6 @@ function CheckoutBanner() {
   const q = new URLSearchParams(window.location.search);
   const state = q.get("checkout");
   if (!state) return null;
-  const clear = () => window.history.replaceState(null, "", "/");
   const text =
     state === "paid"
       ? `Payment captured by PayPal. Order ${q.get("order")} is now in Forestall.`
@@ -28,56 +43,113 @@ function CheckoutBanner() {
   return (
     <div className={`banner ${state === "paid" ? "ok" : "bad"}`}>
       <span>{text}</span>
-      <button className="link" onClick={clear}>Dismiss</button>
+      <button className="link" onClick={() => window.history.replaceState(null, "", "/")}>Dismiss</button>
     </div>
   );
 }
 
-const SIGNAL_LABEL: Record<string, string> = {
-  no_tracking: "No tracking on PayPal",
-  stalled: "Shipment stalled",
-  buyer_concern: "Buyer worried",
-  delivered_not_received: "Delivered, not received",
-};
+function ReportCard({ r }: { r: Report | null }) {
+  if (!r) return null;
+  const stats: [string, string | number][] = [
+    ["Orders watched", r.shipped],
+    ["Watching now", r.watching],
+    ["AI checks run", r.checks_run],
+    ["Risks caught", r.orders_flagged],
+    ["PayPal confirmations", r.paypal_confirmations],
+    ["Protected", r.protected],
+  ];
+  return (
+    <section className="card">
+      <h2>Protection report</h2>
+      <div className="stats">
+        {stats.map(([k, v]) => (
+          <div key={k} className="stat"><strong>{v}</strong><span>{k}</span></div>
+        ))}
+      </div>
+      <p className="small muted">
+        Proof on PayPal: <b>{r.proof_coverage_pct === null ? "—" : `${r.proof_coverage_pct}%`}</b> of shipped orders
+        have tracking on the PayPal transaction · Disputes: <b>{r.disputes}</b>
+      </p>
+    </section>
+  );
+}
 
-function OrderRow({ o, scenarios, onChange }: { o: Order; scenarios: Scenario[]; onChange: () => void }) {
-  const [scenario, setScenario] = useState(scenarios[0]?.id ?? "");
-  const [busy, setBusy] = useState(false);
+function Timeline({ id, version }: { id: string; version: number }) {
+  const [items, setItems] = useState<TimelineItem[] | null>(null);
+  useEffect(() => {
+    getTimeline(id).then(setItems).catch(() => setItems([]));
+  }, [id, version]);
+  if (!items) return <p className="muted small">Loading timeline…</p>;
+  return (
+    <ol className="timeline">
+      {items.map((t, i) => (
+        <li key={i} className={`k-${t.kind}`}>
+          <span className="icon">{KIND_ICON[t.kind] ?? "•"}</span>
+          <div>
+            <div><b>{t.title}</b> <span className="muted small">· {when(t.occurred_at)}</span></div>
+            {typeof t.detail.reason === "string" && t.kind !== "check" && <div className="small">{t.detail.reason}</div>}
+            {typeof t.detail.text === "string" && <div className="small quote">“{t.detail.text}”</div>}
+            {t.kind === "check" && typeof t.detail.reason === "string" && (
+              <div className="small muted">{t.detail.reason}</div>
+            )}
+            {t.kind === "paypal" && <div className="small muted">PayPal response stored as proof</div>}
+            {t.kind === "protected" && Array.isArray(t.detail.trackers_on_paypal) && (
+              <div className="small muted">
+                Read back from PayPal: {t.detail.trackers_on_paypal.length} tracker(s) on the transaction
+              </div>
+            )}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function OrderCard({ o, scenarios, onChange }: { o: Order; scenarios: Scenario[]; onChange: () => void }) {
+  const [scenario, setScenario] = useState("no_tracking");
+  const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [version, setVersion] = useState(0);
 
-  const run = async () => {
-    setBusy(true);
+  const act = async (label: string, fn: () => Promise<{ error?: string; risk_level?: string; watch_status?: string }>) => {
+    setBusy(label);
     setNote(null);
     try {
-      const r = await simulate(o.id, scenario || scenarios[0].id);
-      if (r.ai_error) setNote(`Scenario applied, but the AI couldn't assess it: ${r.ai_error}`);
-      else if (r.assessment && r.assessment.risk_level === "low") setNote(`AI: low risk. ${r.assessment.reason}`);
+      const r = await fn();
+      if (r.error) setNote(r.error);
+      else if (r.watch_status === "protected") setNote("Delivered with proof on PayPal. Watch closed: protected.");
+      setVersion((v) => v + 1);
       onChange();
     } catch (e) {
       setNote(`Failed: ${(e as Error).message}`);
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
+
+  const status =
+    o.watch_status === "protected" ? <span className="badge protected">PROTECTED</span>
+      : o.risk_level ? <span className={`badge ${o.risk_level}`}>{o.risk_level.toUpperCase()}</span>
+        : o.watch_status === "watching" ? <span className="badge watching">WATCHING</span>
+          : <span className="badge none">NOT SHIPPED</span>;
 
   return (
     <li>
       <div className="row">
         <strong>{o.buyer_name ?? "Unknown buyer"}</strong>
-        {o.risk_level ? (
-          <span className={`badge ${o.risk_level}`}>{o.risk_level.toUpperCase()}</span>
-        ) : (
-          <span className="badge none">OK</span>
-        )}
+        {status}
       </div>
       <div className="row">
         <code>{o.paypal_order_id}</code>
         <strong>{money(o)}</strong>
       </div>
       <div className="muted small">
-        Paid {when(o.captured_at)} ·{" "}
-        {o.tracking_attached_at ? `Tracking on PayPal (${o.tracking_number})` : o.tracking_number ? "Tracking NOT on PayPal" : "No tracking yet"}
+        Paid {when(o.captured_at)}
+        {o.shipped_at && <> · {o.tracking_attached_at ? "Tracking on PayPal ✓" : "Tracking NOT on PayPal"}</>}
+        {o.watch_status === "watching" && o.next_check_at && <> · next check {when(o.next_check_at)}</>}
       </div>
+
       {o.flag_reason && (
         <div className="flag">
           <div className="small"><b>{SIGNAL_LABEL[o.signal ?? ""] ?? o.signal}</b> · flagged by AI</div>
@@ -85,40 +157,62 @@ function OrderRow({ o, scenarios, onChange }: { o: Order; scenarios: Scenario[];
         </div>
       )}
       {note && <div className="muted small note">{note}</div>}
-      {scenarios.length > 0 && (
+
+      {o.watch_status === "not_shipped" && (
         <div className="sim">
-          <select value={scenario} onChange={(e) => setScenario(e.target.value)} disabled={busy}>
-            {scenarios.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          <select value={scenario} onChange={(e) => setScenario(e.target.value)} disabled={!!busy}>
+            {scenarios.map((s) => <option key={s.id} value={s.id}>Demo: {s.label}</option>)}
+            <option value="">Real shipment (attach tracking to PayPal now)</option>
           </select>
-          <button className="secondary" onClick={run} disabled={busy}>
-            {busy ? "AI is assessing…" : "Simulate + assess"}
+          <button onClick={() => act("ship", () => shipOrder(o.id, scenario || null))} disabled={!!busy}>
+            {busy === "ship" ? "Shipping…" : "Mark shipped"}
           </button>
         </div>
       )}
+      {o.watch_status === "watching" && (
+        <div className="sim">
+          {o.demo_scenario && (
+            <button onClick={() => act("advance", () => advanceOrder(o.id, 24))} disabled={!!busy}>
+              {busy === "advance" ? "AI is checking…" : "Advance 1 day ⏩"}
+            </button>
+          )}
+          <button className="secondary" onClick={() => act("check", () => checkOrder(o.id))} disabled={!!busy}>
+            {busy === "check" ? "Checking…" : "Check now"}
+          </button>
+        </div>
+      )}
+
+      {o.watch_status !== "not_shipped" && (
+        <button className="link small" onClick={() => setOpen(!open)}>
+          {open ? "Hide timeline" : "Show timeline (proof Forestall followed this order)"}
+        </button>
+      )}
+      {open && <Timeline id={o.id} version={version} />}
     </li>
   );
 }
 
-const money = (o: Order) => `${o.currency === "USD" ? "$" : o.currency + " "}${Number(o.amount).toFixed(2)}`;
-const when = (s: string) => new Date(s).toLocaleString();
-
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [report, setReport] = useState<Report | null>(null);
+  const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [quickNote, setQuickNote] = useState<string | null>(null);
 
+  const refresh = () => {
+    getOrders().then(setOrders).catch(() => {});
+    getReport().then(setReport).catch(() => {});
+  };
   const load = () => {
     setError(null);
     getHealth().then(setHealth).catch((e) => setError(String(e.message ?? e)));
-    getOrders().then(setOrders).catch(() => {});
     getScenarios().then(setScenarios).catch(() => {});
+    refresh();
   };
-  const refreshOrders = () => getOrders().then(setOrders).catch(() => {});
   useEffect(load, []);
 
-  const [quickNote, setQuickNote] = useState<string | null>(null);
   const quickBuy = async () => {
     setBusy(true);
     setError(null);
@@ -126,7 +220,7 @@ export default function App() {
     try {
       const r = await createCardOrder();
       setQuickNote(`PayPal captured $${Number(r.order.amount).toFixed(2)} from ${r.order.buyer_name} for “${r.item.name}”.`);
-      await refreshOrders();
+      refresh();
     } catch (e) {
       setError(`Couldn't create the quick order: ${(e as Error).message}`);
     } finally {
@@ -139,25 +233,53 @@ export default function App() {
     setError(null);
     try {
       const t = await createTestOrder();
-      window.location.href = t.approve_url; // PayPal sandbox checkout
+      window.location.href = t.approve_url;
     } catch (e) {
       setError(`Couldn't create the test order: ${(e as Error).message}`);
       setBusy(false);
     }
   };
 
+  const ready = health?.paypal === "ok";
+
   return (
     <main>
       <header>
         <h1>Forestall</h1>
-        <p>Stops “item not received” disputes before buyers file them.</p>
+        <p>Watches every PayPal order from shipping to delivery and stops “item not received” disputes before they start.</p>
       </header>
 
       <CheckoutBanner />
+      <ReportCard r={report} />
+
+      <section className="card">
+        <h2>1 · Take a payment</h2>
+        <p className="muted small">
+          <b>Quick test order</b> pays instantly with PayPal’s sandbox test card. <b>PayPal checkout</b> opens the real
+          PayPal flow for a sandbox buyer account.
+        </p>
+        <div className="sim">
+          <button onClick={quickBuy} disabled={busy || !ready}>{busy ? "Working…" : "Quick test order"}</button>
+          <button className="secondary" onClick={buy} disabled={busy || !ready}>PayPal checkout</button>
+        </div>
+        {quickNote && <p className="good small">{quickNote}</p>}
+        {error && <p className="warn small">{error}</p>}
+      </section>
+
+      <section className="card">
+        <h2>2 · Ship it and let Forestall watch ({orders.length})</h2>
+        <p className="muted small">
+          Mark an order shipped with a demo delivery story, then use <b>Advance 1 day</b> to watch it unfold. The AI
+          checks the order whenever something happens and whenever time alone creates risk.
+        </p>
+        {orders.length === 0 && <p className="muted">No orders yet.</p>}
+        <ul className="orders">
+          {orders.map((o) => <OrderCard key={o.id} o={o} scenarios={scenarios} onChange={refresh} />)}
+        </ul>
+      </section>
 
       <section className="card">
         <h2>System status</h2>
-        {error && <p className="warn">{error}</p>}
         {!health && !error && <p>Checking…</p>}
         {health && (
           <>
@@ -169,36 +291,6 @@ export default function App() {
           </>
         )}
         <button className="secondary" onClick={load}>Recheck</button>
-      </section>
-
-      <section className="card">
-        <h2>Create an order</h2>
-        <p className="muted">
-          <b>Quick test order</b> pays instantly with PayPal’s sandbox test card, no login needed.
-          <b> PayPal checkout</b> opens the real PayPal flow for a sandbox buyer account.
-        </p>
-        <div className="sim">
-          <button onClick={quickBuy} disabled={busy || health?.paypal !== "ok"}>
-            {busy ? "Working…" : "Quick test order"}
-          </button>
-          <button className="secondary" onClick={buy} disabled={busy || health?.paypal !== "ok"}>
-            PayPal checkout
-          </button>
-        </div>
-        {quickNote && <p className="good small">{quickNote}</p>}
-      </section>
-
-      <section className="card">
-        <h2>Orders ({orders.length})</h2>
-        {orders.length === 0 && <p className="muted">No orders yet.</p>}
-        <p className="muted small">
-          No real carrier data exists in the sandbox, so pick a delivery story for an order and let the AI judge it.
-        </p>
-        <ul className="orders">
-          {orders.map((o) => (
-            <OrderRow key={o.id} o={o} scenarios={scenarios} onChange={refreshOrders} />
-          ))}
-        </ul>
       </section>
     </main>
   );

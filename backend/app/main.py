@@ -2,13 +2,13 @@ import json
 import random
 from urllib.parse import quote
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from pydantic import BaseModel
 
-from . import ai, db, orders, paypal, risk, simulator
+from . import ai, db, orders, paypal, risk, simulator, watcher
 from .config import settings
 
 app = FastAPI(title="Forestall API", version="0.2.0")
@@ -53,6 +53,7 @@ async def list_orders():
         """
         select o.id, o.paypal_order_id, o.capture_id, o.buyer_name, o.buyer_email, o.amount, o.currency,
                o.captured_at, o.tracking_number, o.tracking_attached_at, o.demo_shift_hours,
+               o.shipped_at, o.watch_status, o.next_check_at, o.demo_scenario,
                f.risk_level, f.signal, f.reason as flag_reason, f.updated_at as flagged_at
         from orders o
         left join flags f on f.order_id = o.id and not f.resolved
@@ -103,32 +104,108 @@ async def assess_order(order_id: str, force: bool = False):
         raise HTTPException(503, str(e))
 
 
-class ScenarioIn(BaseModel):
-    scenario: str
-
+# --- Watching orders from "shipped" to "protected" ---------------------------
 
 @api.get("/demo/scenarios")
 async def list_scenarios():
     return [{"id": k, "label": v["label"]} for k, v in simulator.SCENARIOS.items()]
 
 
-@api.post("/orders/{order_id}/simulate")
-async def simulate(order_id: str, body: ScenarioIn):
-    """Replay a delivery story on this order, then have the AI assess it."""
-    try:
-        sim = await simulator.apply(order_id, body.scenario)
-    except KeyError:
-        raise HTTPException(400, f"unknown scenario; choose one of {list(simulator.SCENARIOS)}")
-    except LookupError:
+class ShipIn(BaseModel):
+    scenario: str | None = None          # demo: play a scripted delivery story
+    carrier: str = "USPS"
+    tracking_number: str | None = None
+    attach_to_paypal: bool | None = None  # default: scenario decides; real shipments attach
+
+
+def _watch_errors(e: Exception):
+    if isinstance(e, LookupError):
         raise HTTPException(404, "order not found")
+    if isinstance(e, KeyError):
+        raise HTTPException(400, f"unknown scenario; choose one of {list(simulator.SCENARIOS)}")
+    if isinstance(e, ValueError):
+        raise HTTPException(409, str(e))
+    if isinstance(e, paypal.PayPalError):
+        raise HTTPException(502, {"paypal_status": e.status, "paypal_error": e.body})
+    raise e
+
+
+@api.post("/orders/{order_id}/ship")
+async def ship_order(order_id: str, body: ShipIn):
+    """Mark shipped and start watching. Forestall follows the order from here."""
     try:
-        assessment = await risk.assess(order_id)
-    except ai.AIUnavailable as e:
-        return {"simulation": sim, "assessment": None, "ai_error": str(e)}
-    return {"simulation": sim, "assessment": assessment}
+        attach = body.attach_to_paypal if body.attach_to_paypal is not None else (None if body.scenario else True)
+        return await watcher.ship(order_id, body.scenario, body.carrier, body.tracking_number, attach)
+    except Exception as e:
+        _watch_errors(e)
 
 
-# --- Demo checkout: a sandbox buyer pays for a test order ---------------------
+@api.post("/orders/{order_id}/advance")
+async def advance_order(order_id: str, hours: int = 24):
+    """Demo time travel: move this order's clock forward and let the watcher react."""
+    if not 1 <= hours <= 72:
+        raise HTTPException(400, "hours must be 1-72")
+    try:
+        return await watcher.advance(order_id, hours)
+    except Exception as e:
+        _watch_errors(e)
+
+
+@api.post("/orders/{order_id}/check")
+async def check_order(order_id: str):
+    try:
+        return await watcher.check(order_id, trigger="manual")
+    except Exception as e:
+        _watch_errors(e)
+
+
+@api.get("/orders/{order_id}/timeline")
+async def order_timeline(order_id: str):
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(503, "database not configured")
+    rows = await pool.fetch(
+        "select kind, title, detail, occurred_at, recorded_at from order_timeline where order_id::text=$1"
+        " order by occurred_at, recorded_at", order_id)
+    return [{**dict(r), "detail": json.loads(r["detail"])} for r in rows]
+
+
+@api.api_route("/watch/tick", methods=["GET", "POST"])
+async def watch_tick(authorization: str = Header(default="")):
+    """Scheduled sweep (Vercel Cron daily + GitHub Actions every 15 min)."""
+    if not settings.cron_secret or authorization != f"Bearer {settings.cron_secret}":
+        raise HTTPException(401, "missing or wrong scheduler secret")
+    return await watcher.sweep()
+
+
+@api.get("/report")
+async def protection_report():
+    """Evidence that Forestall followed every order: coverage, checks, catches, fixes, proof."""
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(503, "database not configured")
+    r = await pool.fetchrow(
+        """
+        select
+          (select count(*) from orders)                                              as orders,
+          (select count(*) from orders where shipped_at is not null)                 as shipped,
+          (select count(*) from orders where watch_status = 'watching')              as watching,
+          (select count(*) from orders where watch_status = 'protected')             as protected,
+          (select count(*) from order_timeline where kind = 'check')                 as checks_run,
+          (select count(distinct order_id) from order_timeline where kind = 'flag')  as orders_flagged,
+          (select count(*) from order_timeline where kind = 'paypal')                as paypal_confirmations,
+          (select count(*) from orders where shipped_at is not null and tracking_attached_at is not null) as shipped_with_proof,
+          (select count(*) from disputes)                                            as disputes
+        """
+    )
+    d = dict(r)
+    d["proof_coverage_pct"] = round(100 * d["shipped_with_proof"] / d["shipped"], 1) if d["shipped"] else None
+    by_signal = await pool.fetch(
+        "select detail->>'signal' as signal, count(distinct order_id) as orders from order_timeline"
+        " where kind='flag' group by 1 order by 2 desc")
+    d["risks_caught_by_signal"] = {x["signal"]: x["orders"] for x in by_signal}
+    return d
+
 
 @api.post("/demo/test-order")
 async def create_test_order(request: Request):

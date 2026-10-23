@@ -24,20 +24,45 @@ export type Order = {
   risk_level: "low" | "medium" | "high" | null;
   signal: string | null;
   flag_reason: string | null;
+  shipped_at: string | null;
+  watch_status: "not_shipped" | "watching" | "protected" | "closed";
+  next_check_at: string | null;
+  demo_scenario: string | null;
+  demo_shift_hours: number;
 };
 
 export type Scenario = { id: string; label: string };
 
-export type SimulateResult = {
-  simulation: { scenario: string; label: string; shift_hours: number };
-  assessment: { risk_level: string; signal: string; reason: string; facts_used: string[]; cached: boolean } | null;
-  ai_error?: string;
+export type CheckResult = {
+  risk_level?: string;
+  signal?: string;
+  reason?: string;
+  watch_status?: string;
+  next_check_in_hours?: number;
+  error?: string;
+  skipped?: boolean;
 };
 
-export type TestOrder = {
-  paypal_order_id: string;
-  item: { sku: string; name: string; price: number };
-  approve_url: string;
+export type TimelineItem = {
+  kind: string;
+  title: string;
+  detail: Record<string, unknown>;
+  occurred_at: string;
+  recorded_at: string;
+};
+
+export type Report = {
+  orders: number;
+  shipped: number;
+  watching: number;
+  protected: number;
+  checks_run: number;
+  orders_flagged: number;
+  paypal_confirmations: number;
+  shipped_with_proof: number;
+  proof_coverage_pct: number | null;
+  disputes: number;
+  risks_caught_by_signal: Record<string, number>;
 };
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -59,11 +84,18 @@ export const getHealth = () => call<Health>("/api/health");
 export const getOrders = () => call<Order[]>("/api/orders");
 export const createTestOrder = () => call<TestOrder>("/api/demo/test-order", { method: "POST" });
 export const getScenarios = () => call<Scenario[]>("/api/demo/scenarios");
-export const simulate = (orderId: string, scenario: string) =>
-  call<SimulateResult>(`/api/orders/${orderId}/simulate`, {
+const post = <T,>(path: string, body?: unknown) =>
+  call<T>(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scenario }),
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
+
+export const shipOrder = (id: string, scenario: string | null) =>
+  post<CheckResult>(`/api/orders/${id}/ship`, scenario ? { scenario } : {});
+export const advanceOrder = (id: string, hours = 24) => post<CheckResult>(`/api/orders/${id}/advance?hours=${hours}`);
+export const checkOrder = (id: string) => post<CheckResult>(`/api/orders/${id}/check`);
+export const getTimeline = (id: string) => call<TimelineItem[]>(`/api/orders/${id}/timeline`);
+export const getReport = () => call<Report>("/api/report");
 export const createCardOrder = () =>
   call<{ order: Order; item: { name: string }; paypal_status: string }>("/api/demo/card-order", { method: "POST" });

@@ -43,3 +43,14 @@ code { font-size: 13px; word-break: break-all; }
 .sim select { flex: 1 1 200px; min-width: 0; padding: 9px; border-radius: 8px; border: 1px solid var(--border);
   background: var(--card); color: var(--text); font-size: 14px; }
 .sim button { margin-top: 0; }
+.badge.protected { background: var(--good); color: #fff; }
+.badge.watching { background: color-mix(in srgb, var(--accent) 18%, var(--card)); color: var(--accent); }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+.stat { display: flex; flex-direction: column; padding: 10px; border: 1px solid var(--border); border-radius: 10px; }
+.stat strong { font-size: 22px; } .stat span { font-size: 12px; color: var(--muted); }
+.timeline { list-style: none; margin: 10px 0 0; padding: 0 0 0 4px; border-left: 2px solid var(--border); }
+.timeline li { display: flex; gap: 8px; padding: 6px 0 6px 8px; border: 0; }
+.timeline .icon { width: 22px; flex: none; }
+.timeline .k-flag b { color: var(--warn); } .timeline .k-protected b, .timeline .k-paypal b { color: var(--good); }
+.quote { font-style: italic; }
+button.link.small { margin-top: 10px; font-size: 13px; color: var(--accent); }

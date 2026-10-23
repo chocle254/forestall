@@ -1,0 +1,21 @@
+name: Forestall watcher
+
+# Every 15 minutes, ask Forestall to check every watched order that is due.
+# (Vercel's free plan only allows a daily cron, so GitHub Actions drives the frequent sweep.)
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Sweep due orders
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          FORESTALL_URL: https://forestall-gamma.vercel.app
+        run: |
+          curl -fsS -X POST "$FORESTALL_URL/api/watch/tick" \
+            -H "Authorization: Bearer $CRON_SECRET" --max-time 240

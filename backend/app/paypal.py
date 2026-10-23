@@ -171,3 +171,25 @@ async def create_card_order(item: dict, buyer_name: str) -> dict:
         },
     }
     return await request("POST", "/v2/checkout/orders", json=body, idempotency_key=str(uuid.uuid4()))
+
+
+async def add_tracking(order_id: str, capture_id: str, tracking_number: str, carrier: str = "USPS",
+                       notify_payer: bool = False) -> dict:
+    """Attach shipment tracking to the PayPal transaction (Orders v2 track)."""
+    body = {
+        "capture_id": capture_id,
+        "tracking_number": tracking_number,
+        "carrier": carrier,
+        "notify_payer": notify_payer,
+    }
+    return await request("POST", f"/v2/checkout/orders/{order_id}/track", json=body,
+                         idempotency_key=f"track-{order_id}-{tracking_number}")
+
+
+def trackers_on(order: dict) -> list[dict]:
+    """Tracking entries PayPal holds for an order (read back as proof)."""
+    out = []
+    for unit in order.get("purchase_units", []):
+        for t in (unit.get("shipping") or {}).get("trackers", []) or []:
+            out.append({"id": t.get("id"), "status": t.get("status"), "created_time": t.get("create_time")})
+    return out

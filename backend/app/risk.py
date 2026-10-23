@@ -66,6 +66,8 @@ async def build_context(order_id: str) -> dict:
         "order": {
             "amount": f"{o['amount']} {o['currency']}",
             "hours_since_payment": _hours(captured, now),
+            "shipped": o["shipped_at"] is not None,
+            "hours_since_shipped": _hours(o["shipped_at"], now) if o["shipped_at"] else None,
             "seller_has_tracking_number": bool(o["tracking_number"]),
             "carrier": o["carrier"],
             "tracking_attached_to_paypal": o["tracking_attached_at"] is not None,
