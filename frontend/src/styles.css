@@ -69,3 +69,12 @@ button.link.small { margin-top: 10px; font-size: 13px; color: var(--accent); }
   margin-right: 4px; background: var(--border); color: var(--text); }
 .src-paypal { background: #003087; color: #fff; } .src-carrier { background: #5b6372; color: #fff; }
 .src-buyer { background: #ef8f00; color: #fff; }
+.fix.done { border-left-color: var(--good); background: color-mix(in srgb, var(--good) 7%, var(--card)); }
+.fix.bad { border-left-color: #c62828; }
+.chip.ok { border-color: var(--good); color: var(--good); }
+.edit textarea, .sim input { width: 100%; box-sizing: border-box; padding: 9px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card); color: var(--text); font: inherit; font-size: 14px; }
+.edit label input { width: 100px; margin-left: 6px; }
+.sim input { flex: 1 1 160px; min-width: 0; }
+.reply { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.stats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }

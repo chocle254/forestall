@@ -32,10 +32,15 @@ export type Order = {
   demo_scenario: string | null;
   demo_shift_hours: number;
   action_id: string | null;
-  action_type: "attach_tracking" | "message_buyer" | "partial_refund" | null;
+  action_type: "attach_tracking" | "message_buyer" | "partial_refund" | "full_refund" | "ship_replacement" | null;
   action_params: Record<string, string | number | boolean> | null;
   action_justification: string | null;
-  action_status: string | null;
+  action_status: "proposed" | "approved" | "executed" | "failed" | "dismissed" | null;
+  action_edited: boolean | null;
+  action_is_followup: boolean | null;
+  action_result: Record<string, unknown> | null;
+  resolution: string | null;
+  refunded_amount: string;
   carrier_source: "simulator" | "easypost" | "manual";
   tracking_public_url: string | null;
   carrier: string | null;
@@ -85,6 +90,9 @@ export type Report = {
   proof_coverage_pct: number | null;
   disputes: number;
   risks_caught_by_signal: Record<string, number>;
+  fixes_executed: number;
+  refunded_total: string;
+  resolved_by_refund: number;
 };
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -126,3 +134,13 @@ export const createCardOrder = () =>
   call<{ order: Order; item: { name: string }; paypal_status: string }>("/api/demo/card-order", { method: "POST" });
 // Nudge the watcher whenever the app opens (the server throttles it).
 export const nudgeWatcher = () => fetch(`${API_URL}/api/watch/tick`, { method: "POST" }).catch(() => {});
+export const approveAction = (id: string) => post<{ status: string; paypal_error?: unknown }>(`/api/actions/${id}/approve`);
+export const dismissAction = (id: string) => post<unknown>(`/api/actions/${id}/dismiss`);
+export const editAction = (id: string, body: { message?: string; note_to_payer?: string; amount?: number }) =>
+  call<unknown>(`/api/actions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+export const buyerReply = (orderId: string, text: string) =>
+  post<{ intent: { choice: string; summary: string } | null; proposal: unknown }>(`/api/orders/${orderId}/buyer-reply`, { text });

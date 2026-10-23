@@ -153,17 +153,19 @@ async def ingest_easypost(order_id, tracker: dict) -> int:
     return new
 
 
-async def attach_tracking(order_id: str, actor: str) -> dict:
+async def attach_tracking(order_id: str, actor: str, notify_payer: bool = False) -> dict:
     """Attach the order's tracking to its PayPal transaction (a real PayPal call)."""
     pool = await db.get_pool()
     assert pool
     o = await pool.fetchrow("select * from orders where id=$1", order_id)
-    result = await paypal.add_tracking(o["paypal_order_id"], o["capture_id"], o["tracking_number"], o["carrier"] or "USPS")
+    result = await paypal.add_tracking(o["paypal_order_id"], o["capture_id"], o["tracking_number"],
+                                       o["carrier"] or "USPS", notify_payer=notify_payer)
     at = _now(o)
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("update orders set tracking_attached_at=$2, next_check_at=now() where id=$1", order_id, at)
         await log(conn, order_id, "paypal", "PayPal confirmed tracking on the transaction",
-                  {"by": actor, "tracking_number": o["tracking_number"], "paypal_response": result}, at)
+                  {"by": actor, "tracking_number": o["tracking_number"], "notify_payer": notify_payer,
+                   "paypal_response": result}, at)
     return result
 
 

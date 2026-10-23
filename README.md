@@ -181,7 +181,7 @@ Local frontend: `cd frontend && npm install && VITE_API_URL=http://localhost:800
 - [x] 4. Delivery simulator + watcher (scripted stories over simulated days; scheduled sweep)
 - [x] 5. AI assess (Groq `openai/gpt-oss-120b`, Qwen fallback)
 - [x] 6. AI recommend (one fix per flag; PayPal parameters filled and validated by the backend)
-- [ ] 7. Approve and execute
+- [x] 7. Approve / edit / dismiss; execute on PayPal; buyer reply -> follow-up fix
 - [ ] 8. AG Grid risk queue
 - [ ] 9. Disputes + evidence
 - [ ] 10. Insights panel

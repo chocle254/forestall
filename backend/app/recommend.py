@@ -135,11 +135,18 @@ async def recommend(order_id: str, force: bool = False) -> dict | None:
     flag = await pool.fetchrow("select * from flags where order_id=$1 and not resolved", order_id)
     if not flag:
         return None
-    existing = await pool.fetchrow(
-        "select * from actions where flag_id=$1 and status='proposed' order by created_at desc limit 1", flag["id"])
-    # Reuse the proposal unless the flag changed since it was made.
-    if existing and not force and existing["created_at"] >= flag["updated_at"]:
-        return _out(existing)
+    # A follow-up the buyer chose (refund / replacement) waits for the seller; never replace it.
+    followup = await pool.fetchrow(
+        "select * from actions where order_id=$1 and status='proposed' and parent_action_id is not null"
+        " order by created_at desc limit 1", order_id)
+    if followup and not force:
+        return _out(followup)
+    latest = await pool.fetchrow(
+        "select * from actions where flag_id=$1 and status <> 'superseded' order by created_at desc limit 1", flag["id"])
+    # Unless the risk changed since: reuse a pending proposal, and don't re-propose once the seller
+    # has acted on (or dismissed) a fix for this risk.
+    if latest and not force and latest["created_at"] >= flag["updated_at"]:
+        return _out(latest) if latest["status"] == "proposed" else None
 
     order = await pool.fetchrow("select * from orders where id=$1", order_id)
     context = await risk.build_context(order_id)

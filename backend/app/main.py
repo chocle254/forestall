@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from pydantic import BaseModel
 
-from . import ai, db, easypost, investigate, orders, paypal, recommend, risk, simulator, watcher
+from . import actions, ai, db, easypost, investigate, orders, paypal, recommend, risk, simulator, watcher
 from .config import settings
 
 app = FastAPI(title="Forestall API", version="0.2.0")
@@ -66,11 +66,13 @@ async def list_orders():
                f.risk_level, f.signal, f.reason as flag_reason, f.updated_at as flagged_at,
                a.id as action_id, a.type as action_type, a.params as action_params,
                a.justification as action_justification, a.status as action_status,
+               a.edited as action_edited, a.parent_action_id is not null as action_is_followup,
+               a.paypal_response as action_result, o.resolution, o.refunded_amount,
                i.findings as findings, i.tool_calls as tool_calls
         from orders o
         left join flags f on f.order_id = o.id and not f.resolved
         left join lateral (
-          select * from actions x where x.order_id = o.id and x.status = 'proposed'
+          select * from actions x where x.order_id = o.id and x.status <> 'superseded'
           order by x.created_at desc limit 1
         ) a on true
         left join investigations i on i.id = a.investigation_id
@@ -82,6 +84,7 @@ async def list_orders():
         d = dict(r)
         d["action_params"] = json.loads(d["action_params"]) if d["action_params"] else None
         d["findings"] = json.loads(d["findings"]) if d["findings"] else None
+        d["action_result"] = json.loads(d["action_result"]) if d["action_result"] else None
         calls = json.loads(d.pop("tool_calls")) if d["tool_calls"] else []
         d["tools_used"] = [c["tool"] for c in calls]
         out.append(d)
@@ -115,6 +118,66 @@ async def ai_models():
     if not ai.configured():
         raise HTTPException(503, "AI is not configured")
     return {"current": ai.model_name(), "available": await ai.list_models()}
+
+
+# --- Slice 7: approve / edit / dismiss, and the buyer's reply ------------------
+
+def _action_errors(e: Exception):
+    if isinstance(e, LookupError):
+        raise HTTPException(404, str(e))
+    if isinstance(e, ValueError):
+        raise HTTPException(409, str(e))
+    if isinstance(e, ai.AIUnavailable):
+        raise HTTPException(503, str(e))
+    if isinstance(e, easypost.EasyPostError):
+        raise HTTPException(502, {"easypost_status": e.status, "easypost_error": e.body})
+    raise e
+
+
+@api.post("/actions/{action_id}/approve")
+async def approve_action(action_id: str):
+    """The seller approves a fix; Forestall executes it (PayPal fixes are real sandbox API calls)."""
+    try:
+        return await actions.approve(action_id)
+    except Exception as e:
+        _action_errors(e)
+
+
+class ActionEdit(BaseModel):
+    message: str | None = None
+    note_to_payer: str | None = None
+    amount: float | None = None
+
+
+@api.patch("/actions/{action_id}")
+async def edit_action(action_id: str, body: ActionEdit):
+    try:
+        return await actions.edit(action_id, body.message, body.note_to_payer, body.amount)
+    except Exception as e:
+        _action_errors(e)
+
+
+@api.post("/actions/{action_id}/dismiss")
+async def dismiss_action(action_id: str):
+    try:
+        return await actions.dismiss(action_id)
+    except Exception as e:
+        _action_errors(e)
+
+
+class ReplyIn(BaseModel):
+    text: str
+
+
+@api.post("/orders/{order_id}/buyer-reply")
+async def buyer_reply(order_id: str, body: ReplyIn):
+    """Demo: the buyer replies to the seller's message. A chosen option becomes a fix awaiting approval."""
+    if not body.text.strip():
+        raise HTTPException(400, "empty reply")
+    try:
+        return await actions.buyer_reply(order_id, body.text.strip()[:1000])
+    except Exception as e:
+        _action_errors(e)
 
 
 @api.post("/orders/{order_id}/investigate")
@@ -318,7 +381,10 @@ async def protection_report():
           (select count(distinct order_id) from order_timeline where kind = 'flag')  as orders_flagged,
           (select count(*) from order_timeline where kind = 'paypal')                as paypal_confirmations,
           (select count(*) from orders where shipped_at is not null and tracking_attached_at is not null) as shipped_with_proof,
-          (select count(*) from disputes)                                            as disputes
+          (select count(*) from disputes)                                            as disputes,
+          (select count(*) from actions where status = 'executed')                   as fixes_executed,
+          (select coalesce(sum(refunded_amount), 0) from orders)                     as refunded_total,
+          (select count(*) from orders where watch_status = 'closed')                as resolved_by_refund
         """
     )
     d = dict(r)

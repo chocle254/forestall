@@ -195,3 +195,15 @@ def trackers_on(order: dict) -> list[dict]:
         for t in (unit.get("shipping") or {}).get("trackers", []) or []:
             out.append({"id": t.get("id"), "status": t.get("status"), "created_time": t.get("create_time")})
     return out
+
+
+async def refund_capture(capture_id: str, amount: str | None, currency: str, note_to_payer: str | None,
+                         idempotency_key: str) -> dict:
+    """Refund a capture (Payments v2). amount=None refunds whatever is left in full."""
+    body: dict = {}
+    if amount is not None:
+        body["amount"] = {"value": amount, "currency_code": currency}
+    if note_to_payer:
+        body["note_to_payer"] = note_to_payer[:255]
+    return await request("POST", f"/v2/payments/captures/{capture_id}/refund", json=body,
+                         idempotency_key=idempotency_key)

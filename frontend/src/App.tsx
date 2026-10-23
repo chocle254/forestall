@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  approveAction, buyerReply, dismissAction, editAction,
   advanceOrder, checkOrder, createCardOrder, createTestOrder, getHealth, getOrders, getReport,
   getEasyPostCodes, getScenarios, getTimeline, nudgeWatcher, shipOrder,
   type Health, type Order, type Report, type Scenario, type ShipChoice, type TimelineItem,
@@ -56,8 +57,9 @@ function ReportCard({ r }: { r: Report | null }) {
     ["Watching now", r.watching],
     ["AI checks run", r.checks_run],
     ["Risks caught", r.orders_flagged],
+    ["Fixes executed", r.fixes_executed],
     ["PayPal confirmations", r.paypal_confirmations],
-    ["Protected", r.protected],
+    ["Protected / resolved", r.protected + r.resolved_by_refund],
   ];
   return (
     <section className="card">
@@ -116,6 +118,17 @@ const FIX_TITLE: Record<string, string> = {
   attach_tracking: "Attach tracking to PayPal",
   message_buyer: "Message the buyer",
   partial_refund: "Goodwill partial refund",
+  full_refund: "Full refund",
+  ship_replacement: "Ship a replacement",
+};
+
+const RESOLUTION_LABEL: Record<string, string> = {
+  tracking_fixed: "Tracking fixed on PayPal",
+  goodwill_refund: "Goodwill refund sent",
+  awaiting_buyer_reply: "Waiting for the buyer's reply",
+  buyer_reassured: "Buyer happy to wait",
+  refunded: "Refunded in full, no dispute",
+  replacement_shipped: "Replacement on its way",
 };
 
 const TOOL_LABEL: Record<string, string> = {
@@ -148,45 +161,163 @@ function FindingsCard({ o }: { o: Order }) {
   );
 }
 
-function ProposedFix({ o }: { o: Order }) {
-  if (!o.action_type || !o.action_params) return null;
-  const p = o.action_params;
+function FixDetails({ o }: { o: Order }) {
+  const p = o.action_params!;
   return (
-    <div className="fix">
-      <div className="row">
-        <b>Recommended fix · {FIX_TITLE[o.action_type]}</b>
-        <span className="chip">awaiting approval</span>
-      </div>
+    <>
       {o.action_type === "attach_tracking" && (
         <div className="small">
           {String(p.carrier)} <code>{String(p.tracking_number)}</code> goes onto the PayPal transaction, and PayPal
           emails the buyer the tracking.
         </div>
       )}
-      {o.action_type === "partial_refund" && (
+      {(o.action_type === "partial_refund" || o.action_type === "full_refund") && (
         <div className="small">
-          Refund <b>${String(p.amount)}</b> ({String(p.share_of_order_pct)}% of the order) through PayPal.
+          Refund <b>${String(p.amount)}</b>{p.share_of_order_pct ? ` (${String(p.share_of_order_pct)}% of the order)` : ""} through PayPal.
           {p.note_to_payer && <div className="quote">Note PayPal shows the buyer: “{String(p.note_to_payer)}”</div>}
         </div>
+      )}
+      {o.action_type === "ship_replacement" && (
+        <div className="small">Ship a replacement by {String(p.service ?? "Priority Mail")}; its tracking goes onto the PayPal transaction.</div>
       )}
       {o.action_type === "message_buyer" && (
         <div className="small">
           <div className="quote msg">“{String(p.message)}”</div>
-          <div className="muted">Sent by you; PayPal has no pre-dispute messaging API, so Forestall records it.</div>
+          <div className="muted">You send it; PayPal has no pre-dispute messaging API, so Forestall records it.</div>
         </div>
       )}
       {o.action_justification && <div className="small why">Why: {o.action_justification}</div>}
       <div className="small muted">PayPal call: <code>{String(p.paypal_call)}</code></div>
-    </div>
+    </>
   );
 }
 
-type EpCode = { code: string; label: string };
+function ActionPanel({ o, onChange }: { o: Order; onChange: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [amount, setAmount] = useState("");
+  const [reply, setReply] = useState("");
+  if (!o.action_type || !o.action_params || !o.action_id) return null;
+  const p = o.action_params;
+  const id = o.action_id;
 
-function parseChoice(v: string): ShipChoice {
-  if (v.startsWith("sim:")) return { kind: "sim", scenario: v.slice(4) };
-  if (v.startsWith("ep:")) return { kind: "ep", code: v.slice(3) };
-  return { kind: "manual" };
+  const run = async (label: string, fn: () => Promise<unknown>) => {
+    setBusy(label);
+    setErr(null);
+    try {
+      const r = (await fn()) as { status?: string; paypal_error?: unknown } | undefined;
+      if (r && r.status === "failed") setErr(`PayPal rejected it: ${JSON.stringify(r.paypal_error).slice(0, 200)}`);
+      setEditing(false);
+      onChange();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const approve = () =>
+    run("approve", async () => {
+      if (o.action_type === "message_buyer") {
+        try { await navigator.clipboard.writeText(String(p.message)); } catch { /* clipboard may be blocked */ }
+      }
+      return approveAction(id);
+    });
+
+  const startEdit = () => {
+    setDraft(String(o.action_type === "message_buyer" ? p.message : p.note_to_payer ?? ""));
+    setAmount(String(p.amount ?? ""));
+    setEditing(true);
+  };
+  const saveEdit = () =>
+    run("edit", () =>
+      editAction(id, o.action_type === "message_buyer"
+        ? { message: draft }
+        : { note_to_payer: draft, ...(o.action_type === "partial_refund" ? { amount: Number(amount) } : {}) }));
+
+  if (o.action_status === "proposed") {
+    return (
+      <div className="fix">
+        <div className="row">
+          <b>{o.action_is_followup ? "Buyer's choice" : "Recommended fix"} · {FIX_TITLE[o.action_type]}</b>
+          <span className="chip">{o.action_edited ? "edited · " : ""}awaiting approval</span>
+        </div>
+        {!editing && <FixDetails o={o} />}
+        {editing && (
+          <div className="edit">
+            {(o.action_type === "message_buyer" || o.action_type.endsWith("refund")) && (
+              <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={5} />
+            )}
+            {o.action_type === "partial_refund" && (
+              <label className="small">Amount ($) <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" /></label>
+            )}
+          </div>
+        )}
+        {err && <div className="warn small">{err}</div>}
+        <div className="sim">
+          {!editing ? (
+            <>
+              <button onClick={approve} disabled={!!busy}>
+                {busy === "approve" ? "Working…" : o.action_type === "message_buyer" ? "Approve · copy & mark sent" : "Approve"}
+              </button>
+              {o.action_type !== "attach_tracking" && o.action_type !== "ship_replacement" && (
+                <button className="secondary" onClick={startEdit} disabled={!!busy}>Edit</button>
+              )}
+              <button className="secondary" onClick={() => run("dismiss", () => dismissAction(id))} disabled={!!busy}>Dismiss</button>
+            </>
+          ) : (
+            <>
+              <button onClick={saveEdit} disabled={!!busy}>{busy === "edit" ? "Saving…" : "Save"}</button>
+              <button className="secondary" onClick={() => setEditing(false)} disabled={!!busy}>Cancel</button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (o.action_status === "executed") {
+    const r = o.action_result ?? {};
+    const awaiting = o.action_type === "message_buyer" && o.resolution === "awaiting_buyer_reply";
+    return (
+      <div className="fix done">
+        <div className="row"><b>✓ Done · {FIX_TITLE[o.action_type]}</b>{o.resolution && <span className="chip ok">{RESOLUTION_LABEL[o.resolution] ?? o.resolution}</span>}</div>
+        {o.action_type === "attach_tracking" && <div className="small">PayPal now holds the tracking on this transaction and emailed the buyer.</div>}
+        {o.action_type.endsWith("refund") && (
+          <div className="small">PayPal refunded <b>${String(r.amount)}</b> · refund <code>{String(r.refund_id)}</code> ({String(r.status)})</div>
+        )}
+        {o.action_type === "ship_replacement" && <div className="small">Replacement tracking <code>{String(r.tracking_number)}</code> is on the PayPal transaction.</div>}
+        {o.action_type === "message_buyer" && <div className="small quote msg">“{String(p.message)}”</div>}
+        {awaiting && (
+          <div className="reply">
+            <div className="small muted">Demo: reply as the buyer</div>
+            <div className="sim">
+              <button className="secondary" onClick={() => run("reply", () => buyerReply(o.id, "1"))} disabled={!!busy}>“1”</button>
+              <button className="secondary" onClick={() => run("reply", () => buyerReply(o.id, "2"))} disabled={!!busy}>“2”</button>
+              <button className="secondary" onClick={() => run("reply", () => buyerReply(o.id, "No worries, I can wait a few more days."))} disabled={!!busy}>“I can wait”</button>
+            </div>
+            <div className="sim">
+              <input value={reply} onChange={(e) => setReply(e.target.value)} placeholder="…or type a reply" />
+              <button onClick={() => run("reply", () => buyerReply(o.id, reply))} disabled={!!busy || !reply.trim()}>
+                {busy === "reply" ? "AI is reading it…" : "Send reply"}
+              </button>
+            </div>
+          </div>
+        )}
+        {err && <div className="warn small">{err}</div>}
+      </div>
+    );
+  }
+
+  if (o.action_status === "failed") {
+    return <div className="fix bad small">PayPal rejected the {FIX_TITLE[o.action_type].toLowerCase()}. See the timeline for details.</div>;
+  }
+  if (o.action_status === "dismissed") {
+    return <div className="fix small muted">You dismissed the suggested fix ({FIX_TITLE[o.action_type].toLowerCase()}).</div>;
+  }
+  return null;
 }
 
 function OrderCard({ o, scenarios, epCodes, onChange }: {
@@ -216,6 +347,7 @@ function OrderCard({ o, scenarios, epCodes, onChange }: {
 
   const status =
     o.watch_status === "protected" ? <span className="badge protected">PROTECTED</span>
+      : o.watch_status === "closed" ? <span className="badge protected">RESOLVED</span>
       : o.risk_level ? <span className={`badge ${o.risk_level}`}>{o.risk_level.toUpperCase()}</span>
         : o.watch_status === "watching" ? <span className="badge watching">WATCHING</span>
           : <span className="badge none">NOT SHIPPED</span>;
@@ -248,7 +380,7 @@ function OrderCard({ o, scenarios, epCodes, onChange }: {
         </div>
       )}
       <FindingsCard o={o} />
-      <ProposedFix o={o} />
+      <ActionPanel o={o} onChange={onChange} />
       {note && <div className="muted small note">{note}</div>}
 
       {o.watch_status === "not_shipped" && (
