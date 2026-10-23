@@ -250,6 +250,17 @@ async def easypost_test_codes():
     return [{"code": k, "label": v} for k, v in easypost.TEST_CODES.items()] if easypost.test_mode() else []
 
 
+@api.post("/easypost/webhook")
+async def easypost_register_webhook(request: Request):
+    """Register (or confirm) Forestall's EasyPost webhook URL. Idempotent."""
+    if not easypost.configured():
+        raise HTTPException(503, "EasyPost is not configured")
+    try:
+        return await easypost.ensure_webhook(f"{_origin(request)}/api/webhooks/easypost")
+    except easypost.EasyPostError as e:
+        raise HTTPException(502, {"easypost_status": e.status, "easypost_error": e.body})
+
+
 @api.post("/webhooks/easypost")
 async def easypost_webhook(request: Request):
     """EasyPost pushes carrier updates here. Signed with HMAC; we store new scans and schedule a check."""
