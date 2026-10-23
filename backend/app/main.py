@@ -250,6 +250,16 @@ async def easypost_test_codes():
     return [{"code": k, "label": v} for k, v in easypost.TEST_CODES.items()] if easypost.test_mode() else []
 
 
+@api.get("/webhooks/recent")
+async def recent_webhooks():
+    pool = await db.get_pool()
+    if not pool:
+        return []
+    rows = await pool.fetch("select source, event, valid, reference, received_at from webhook_log"
+                            " order by received_at desc limit 20")
+    return [dict(r) for r in rows]
+
+
 @api.post("/easypost/webhook")
 async def easypost_register_webhook(request: Request):
     """Register (or confirm) Forestall's EasyPost webhook URL. Idempotent."""
@@ -265,19 +275,28 @@ async def easypost_register_webhook(request: Request):
 async def easypost_webhook(request: Request):
     """EasyPost pushes carrier updates here. Signed with HMAC; we store new scans and schedule a check."""
     raw = await request.body()
-    if not easypost.verify_signature(raw, request.headers.get("x-hmac-signature")):
-        raise HTTPException(401, "bad signature")
-    event = json.loads(raw)
-    tracker = event.get("result") or {}
-    if tracker.get("object") != "Tracker":
-        return {"ignored": event.get("description")}
     pool = await db.get_pool()
     if not pool:
         raise HTTPException(503, "database not configured")
+    valid = easypost.verify_signature(raw, request.headers.get("x-hmac-signature"))
+    try:
+        event = json.loads(raw)
+    except ValueError:
+        event = {}
+    tracker = event.get("result") or {}
+    await pool.execute("insert into webhook_log (source, event, valid, reference) values ('easypost',$1,$2,$3)",
+                       event.get("description"), valid, tracker.get("id"))
+    if not valid:
+        raise HTTPException(401, "bad signature")
+    if tracker.get("object") != "Tracker":
+        return {"ignored": event.get("description")}
     oid = await pool.fetchval("select id from orders where easypost_tracker_id=$1", tracker.get("id"))
     if not oid:
         return {"ignored": "unknown tracker"}
     new = await watcher.ingest_easypost(oid, tracker)
+    async with pool.acquire() as conn:
+        await watcher.log(conn, oid, "webhook", f"EasyPost pushed a carrier update ({event.get('description')})",
+                          {"new_scans": new, "status": tracker.get("status")})
     # Answer EasyPost fast; the watcher checks the order on its next sweep (or when the app opens).
     return {"order_id": str(oid), "new_scans": new}
 
