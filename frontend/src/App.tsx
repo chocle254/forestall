@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import RiskQueue from "./RiskQueue";
 import {
   approveAction, buyerReply, dismissAction, editAction,
   advanceOrder, checkOrder, createCardOrder, createTestOrder, getHealth, getOrders, getReport,
@@ -432,6 +433,13 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [quickNote, setQuickNote] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+  const selected = orders.find((o) => o.id === selectedId) ?? null;
+  const select = (id: string) => {
+    setSelectedId(id);
+    setTimeout(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  };
 
   const refresh = () => {
     getOrders().then(setOrders).catch(() => {});
@@ -456,8 +464,9 @@ export default function App() {
     setQuickNote(null);
     try {
       const r = await createCardOrder();
-      setQuickNote(`PayPal captured $${Number(r.order.amount).toFixed(2)} from ${r.order.buyer_name} for “${r.item.name}”.`);
+      setQuickNote(`PayPal captured $${Number(r.order.amount).toFixed(2)} from ${r.order.buyer_name} for “${r.item.name}”. Ship it below.`);
       refresh();
+      select(r.order.id);
     } catch (e) {
       setError(`Couldn't create the quick order: ${(e as Error).message}`);
     } finally {
@@ -504,16 +513,27 @@ export default function App() {
       </section>
 
       <section className="card">
-        <h2>2 · Ship it and let Forestall watch ({orders.length})</h2>
+        <h2>2 · Risk queue</h2>
         <p className="muted small">
-          Mark an order shipped with a demo delivery story, then use <b>Advance 1 day</b> to watch it unfold. The AI
-          checks the order whenever something happens and whenever time alone creates risk.
+          Every order, ranked by risk. Approve a fix right in the row, or tap a row to see the investigation,
+          edit the fix, ship an order, or step through time with <b>Advance 1 day</b>.
         </p>
-        {orders.length === 0 && <p className="muted">No orders yet.</p>}
-        <ul className="orders">
-          {orders.map((o) => <OrderCard key={o.id} o={o} scenarios={scenarios} epCodes={epCodes} onChange={refresh} />)}
-        </ul>
+        <RiskQueue orders={orders} selectedId={selectedId} onSelect={select} onChange={refresh} />
       </section>
+
+      <div ref={detailRef}>
+        {selected && (
+          <section className="card">
+            <div className="row">
+              <h2>Order details</h2>
+              <button className="link small" onClick={() => setSelectedId(null)}>Close</button>
+            </div>
+            <ul className="orders">
+              <OrderCard key={selected.id} o={selected} scenarios={scenarios} epCodes={epCodes} onChange={refresh} />
+            </ul>
+          </section>
+        )}
+      </div>
 
       <section className="card">
         <h2>System status</h2>

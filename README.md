@@ -93,7 +93,7 @@ One screen, built around a single workflow. It's a work queue, not a dashboard o
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Risk queue:** an AG Grid table, filterable by risk level and signal, with Approve inline.
+- **Risk queue (AG Grid Community 36):** every order ranked by risk (open risk, then pending approvals, then watched orders). Filter chips (Needs attention, Needs approval, At risk, Watching, Not shipped, Protected/resolved), quick search, per-column text/number/date filters, pagination, and an **Approve** button in the row that executes the fix on PayPal. Tapping a row opens the full order card. Themed from the app's own color tokens, so it follows light and dark mode.
 - **Order panel:** the timeline, the AI's reason, the proposed PayPal call with its exact parameters, and the PayPal response once it runs.
 - **Disputes:** the evidence draft, editable before submitting.
 - **Insights:** one small panel counting flags by type, so recurring problems stand out (for example, "you forget tracking on weekend orders").
@@ -182,7 +182,7 @@ Local frontend: `cd frontend && npm install && VITE_API_URL=http://localhost:800
 - [x] 5. AI assess (Groq `openai/gpt-oss-120b`, Qwen fallback)
 - [x] 6. AI recommend (one fix per flag; PayPal parameters filled and validated by the backend)
 - [x] 7. Approve / edit / dismiss; execute on PayPal; buyer reply -> follow-up fix
-- [ ] 8. AG Grid risk queue
+- [x] 8. AG Grid risk queue (ranked by risk, filter chips, quick search, column filters, inline Approve)
 - [ ] 9. Disputes + evidence
 - [ ] 10. Insights panel
 - [ ] 11. Final polish
