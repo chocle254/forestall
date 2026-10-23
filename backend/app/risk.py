@@ -60,7 +60,9 @@ async def build_context(order_id: str) -> dict:
         order_id,
     )
     msgs = await pool.fetch(
-        "select body, received_at from buyer_messages where order_id = $1 order by received_at", order_id
+        "select body, received_at from buyer_messages where order_id = $1"
+        " and ($2::timestamptz is null or received_at > $2) order by received_at",
+        order_id, o["replacement_shipped_at"],
     )
     # Simulated "now" for demo scenarios (orders aged by the simulator).
     now = datetime.now(timezone.utc) + timedelta(hours=o["demo_shift_hours"])
@@ -75,6 +77,9 @@ async def build_context(order_id: str) -> dict:
             "seller_has_tracking_number": bool(o["tracking_number"]),
             "carrier": o["carrier"],
             "tracking_attached_to_paypal": o["tracking_attached_at"] is not None,
+            **({"replacement_shipped": True,
+                "note": "The first parcel failed and a replacement was shipped; scans and messages below are "
+                        "for the replacement only."} if o["replacement_shipped_at"] else {}),
         },
         "carrier_scans": [
             {"status": e["status"], "location": e["location"], "hours_after_payment": _hours(captured, e["occurred_at"]),

@@ -164,6 +164,9 @@ async def ship_replacement(o) -> dict:
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("update flags set resolved=true, updated_at=now() where order_id=$1 and not resolved", o["id"])
         await recommend.supersede_for_order(conn, o["id"])
+        # The watch now follows the replacement only; the first parcel's scans stay on the timeline.
+        await conn.execute("delete from shipment_events where order_id=$1", o["id"])
+        await conn.execute("update orders set replacement_shipped_at=$2 where id=$1", o["id"], now)
     if easypost.configured():
         tracker = await easypost.create_tracker("EZ4000000004", o["carrier"] or "USPS")
         times = [datetime.fromisoformat(e["occurred_at"].replace("Z", "+00:00"))

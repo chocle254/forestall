@@ -108,14 +108,19 @@ def summarize(tracker: dict, offset_s: int = 0) -> dict:
         "status": tracker.get("status"),
         "status_detail": tracker.get("status_detail"),
         "est_delivery_date": shift(tracker.get("est_delivery_date")),
-        "signed_by": tracker.get("signed_by"),
+        **({} if test_mode() else {
+            "signed_by": tracker.get("signed_by"),
+            "origin": cd.get("origin_location"),
+            "destination": cd.get("destination_location"),
+        }),
         "carrier_service": cd.get("service"),
-        "origin": cd.get("origin_location"),
-        "destination": cd.get("destination_location"),
         "public_url": tracker.get("public_url"),
         "scans": [{"status": e["status"], "location": e["location"], "time": shift(e["occurred_at"]), "message": e["message"]}
                   for e in details_to_events(tracker)],
-        **({"note": "test-mode timestamps shifted to start after payment"} if offset_s else {}),
+        **({"test_mode_note": "EasyPost test tracker: scan locations and recipient are fixed sample data that "
+                              "do NOT relate to this buyer's address. Do not compare them with the shipping "
+                              "address or treat them as misdelivery evidence; use the statuses and messages. "
+                              "Timestamps were shifted to start after payment."} if test_mode() else {}),
     }
 
 
