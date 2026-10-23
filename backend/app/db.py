@@ -49,8 +49,15 @@ async def close() -> None:
 
 
 async def _migrate(pool: asyncpg.Pool) -> None:
-    """Apply each migrations/*.sql file once, in name order."""
-    async with pool.acquire() as conn:
+    """Apply each migrations/*.sql file once, in name order.
+
+    Serverless: several fresh instances may start at once after a deploy. A
+    transaction-scoped advisory lock makes them take turns (it is released at
+    commit, which also works through Neon's connection pooler), so each
+    migration runs exactly once.
+    """
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute("select pg_advisory_xact_lock(7461001)")
         await conn.execute(
             "create table if not exists schema_migrations ("
             " name text primary key, applied_at timestamptz not null default now())"
@@ -59,9 +66,8 @@ async def _migrate(pool: asyncpg.Pool) -> None:
         for f in sorted(MIGRATIONS_DIR.glob("*.sql")):
             if f.name in applied:
                 continue
-            async with conn.transaction():
-                await conn.execute(f.read_text())
-                await conn.execute("insert into schema_migrations (name) values ($1)", f.name)
+            await conn.execute(f.read_text())
+            await conn.execute("insert into schema_migrations (name) values ($1)", f.name)
 
 
 async def check() -> str:

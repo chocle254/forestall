@@ -4,7 +4,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from pydantic import BaseModel
 
@@ -19,6 +19,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def unhandled(request: Request, exc: Exception):
+    # Always answer with JSON, so the app can show what went wrong.
+    return JSONResponse(status_code=500, content={"detail": f"Server error: {type(exc).__name__}: {str(exc)[:200]}"})
+
 
 # On Vercel, every request under /api/* is routed to this app with its full path.
 api = APIRouter(prefix="/api")

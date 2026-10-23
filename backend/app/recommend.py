@@ -41,8 +41,15 @@ Available fixes:
   buyer has been clearly inconvenienced (for example a long stall plus a worried buyer with a deadline).
   Never as the first step for a simple missing-tracking problem.
 
-Write as the seller, in plain friendly English, no jargon, no promises you can't keep (do not promise a delivery
-date the facts don't support). Never invent tracking numbers, carriers, or facts."""
+Write as the seller, in plain friendly English, no jargon. Rules for every message and note:
+- Say times in plain words ("a few days", "since Tuesday"), never raw hours like "79 hours".
+- Never claim the seller has already done something (contacted the carrier, opened an inquiry, reshipped).
+  Nothing has been done yet. You may say what the seller WILL do next, e.g. "I'm checking with USPS today
+  and will update you by tomorrow".
+- No promises the facts don't support (no guaranteed delivery dates). Never invent tracking numbers,
+  carriers, or facts.
+- Address the buyer by first name. Keep messages under 80 words.
+The justification is for the seller: one plain sentence, no raw hour counts."""
 
 
 def _paypal_call(rtype: str, order) -> str:
