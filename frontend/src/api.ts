@@ -47,7 +47,7 @@ export type Order = {
   tracking_public_url: string | null;
   carrier: string | null;
   track_token: string;
-  store_platform: "shopify" | "woocommerce" | null;
+  store_platform: "woocommerce" | null;
   store_order_id: string | null;
   findings: Findings | null;
   tools_used: string[];
@@ -191,7 +191,7 @@ export const evidencePdfUrl = (id: string) => `${API_URL}/api/disputes/${id}/evi
 
 // --- Store connections, email, and the buyer's tracking page ---
 
-export type StorePlatform = "shopify" | "woocommerce";
+export type StorePlatform = "woocommerce";
 export type StoreStatus = {
   platform: StorePlatform;
   secret_set: boolean;

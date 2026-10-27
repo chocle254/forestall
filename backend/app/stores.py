@@ -1,11 +1,12 @@
-"""Store connections: Shopify and WooCommerce tell Forestall when an order ships.
+"""Store connection: WooCommerce tells Forestall when an order ships.
 
-Each store sends a signed webhook when the seller fulfils an order. Forestall
+The store sends a signed webhook when the seller fulfils an order. Forestall
 finds the matching PayPal order, marks it shipped with the store's tracking
 number, attaches that tracking to PayPal and starts watching it. The seller no
 longer copies tracking by hand.
 
-Both platforms sign the raw body the same way: base64(HMAC-SHA256(secret, body)).
+WooCommerce signs the raw body: base64(HMAC-SHA256(secret, body)).
+Shopify can be added later as another parser (see git history).
 """
 
 import base64
@@ -18,13 +19,13 @@ from dataclasses import dataclass, field
 from . import db, easypost, watcher
 from .config import settings
 
-PLATFORMS = ("shopify", "woocommerce")
-SIGNATURE_HEADER = {"shopify": "x-shopify-hmac-sha256", "woocommerce": "x-wc-webhook-signature"}
-TOPIC_HEADER = {"shopify": "x-shopify-topic", "woocommerce": "x-wc-webhook-topic"}
+PLATFORMS = ("woocommerce",)
+SIGNATURE_HEADER = {"woocommerce": "x-wc-webhook-signature"}
+TOPIC_HEADER = {"woocommerce": "x-wc-webhook-topic"}
 
 
 def secret(platform: str) -> str:
-    return settings.shopify_webhook_secret if platform == "shopify" else settings.woocommerce_webhook_secret
+    return settings.woocommerce_webhook_secret
 
 
 def sign(platform: str, body: bytes) -> str:
@@ -61,35 +62,6 @@ def _carrier(name: str | None) -> str:
     return CARRIERS.get((name or "").strip().lower(), (name or "USPS").strip().upper() or "USPS")
 
 
-def parse_shopify(p: dict) -> Fulfillment | None:
-    """orders/fulfilled, orders/updated (an order with fulfillments) or fulfillments/create (a fulfillment)."""
-    if "fulfillments" in p:
-        fs = [f for f in p.get("fulfillments") or [] if f.get("tracking_number") or f.get("tracking_numbers")]
-        if not fs:
-            return None
-        f, order = fs[-1], p
-        store_id = p.get("id")
-    elif "tracking_number" in p or "tracking_numbers" in p:
-        f, order = p, {}
-        store_id = p.get("order_id")
-    else:
-        return None
-    number = f.get("tracking_number") or (f.get("tracking_numbers") or [None])[0]
-    if not number or not store_id:
-        return None
-    customer = order.get("customer") or {}
-    dest = order.get("shipping_address") or f.get("destination") or {}
-    name = " ".join(x for x in (customer.get("first_name"), customer.get("last_name")) if x) or dest.get("name")
-    notes = {str(a.get("name", "")).lower(): str(a.get("value", "")) for a in order.get("note_attributes") or []}
-    return Fulfillment(
-        platform="shopify", store_order_id=str(store_id), tracking_number=str(number),
-        carrier=_carrier(f.get("tracking_company")), tracking_url=f.get("tracking_url") or (f.get("tracking_urls") or [None])[0],
-        paypal_order_id=notes.get("paypal_order_id"), email=order.get("email") or order.get("contact_email") or f.get("email"),
-        total=order.get("total_price"), currency=order.get("currency"), buyer_name=name,
-        refs=[v for v in (order.get("checkout_token"), order.get("token")) if v],
-    )
-
-
 def parse_woocommerce(p: dict) -> Fulfillment | None:
     """order.updated / order.created. Tracking comes from the Shipment Tracking plugin's order meta."""
     if "id" not in p:
@@ -118,7 +90,7 @@ def parse_woocommerce(p: dict) -> Fulfillment | None:
     )
 
 
-PARSERS = {"shopify": parse_shopify, "woocommerce": parse_woocommerce}
+PARSERS = {"woocommerce": parse_woocommerce}
 
 
 async def match(f: Fulfillment):
@@ -162,7 +134,7 @@ async def handle(platform: str, payload: dict, topic: str | None, webhook_url: s
     if not o:
         return {"ignored": "no matching PayPal order", "store_order_id": f.store_order_id}
 
-    label = "Shopify" if platform == "shopify" else "WooCommerce"
+    label = "WooCommerce"
     async with pool.acquire() as conn:
         await conn.execute("update orders set store_platform=$2, store_order_id=$3 where id=$1",
                            o["id"], platform, f.store_order_id)
@@ -214,17 +186,7 @@ def sample_payload(platform: str, o) -> dict:
     code = random.choice([c for c in easypost.TEST_CODES if c != "EZ4000000004"]) if easypost.test_mode() else None
     number = code or f"9400 1000 0000 {random.randint(1000, 9999)} {random.randint(1000, 9999)} {random.randint(10, 99)}".replace(" ", "")
     name = (o["buyer_name"] or "Test Buyer").split(" ", 1)
-    store_id = str(random.randint(5_000_000_000, 5_999_999_999)) if platform == "shopify" else str(random.randint(1000, 9999))
-    if platform == "shopify":
-        return {
-            "id": int(store_id), "name": f"#{random.randint(1001, 1999)}", "email": o["buyer_email"],
-            "total_price": f"{o['amount']:.2f}", "currency": o["currency"], "payment_gateway_names": ["paypal"],
-            "customer": {"first_name": name[0], "last_name": name[1] if len(name) > 1 else ""},
-            "note_attributes": [{"name": "paypal_order_id", "value": o["paypal_order_id"]}],
-            "fulfillments": [{"id": random.randint(4_000_000_000, 4_999_999_999), "status": "success",
-                              "tracking_company": "USPS", "tracking_number": number,
-                              "tracking_url": f"https://tools.usps.com/go/TrackConfirmAction?tLabels={number}"}],
-        }
+    store_id = str(random.randint(1000, 9999))
     return {
         "id": int(store_id), "status": "completed", "currency": o["currency"], "total": f"{o['amount']:.2f}",
         "payment_method": "ppcp-gateway", "transaction_id": o["capture_id"],

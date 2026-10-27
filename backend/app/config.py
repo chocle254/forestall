@@ -41,7 +41,6 @@ class Settings(BaseSettings):
     public_url: str = ""
 
     # Store connections: the webhook signing secret from each store's admin.
-    shopify_webhook_secret: str = ""
     woocommerce_webhook_secret: str = ""
 
     # Comma-separated origins allowed to call the API (the Vercel frontend).

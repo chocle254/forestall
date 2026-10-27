@@ -425,7 +425,7 @@ async def paypal_webhook(request: Request):
     return {"ignored": etype}
 
 
-# --- Store connections (Shopify, WooCommerce) ----------------------------------
+# --- Store connection (WooCommerce) ---------------------------------------------
 
 @api.get("/stores")
 async def store_status(request: Request):
@@ -435,7 +435,7 @@ async def store_status(request: Request):
 
 @api.post("/webhooks/{platform}")
 async def store_webhook(platform: str, request: Request):
-    """Shopify / WooCommerce call this when an order ships. Signed with the store's webhook secret."""
+    """WooCommerce calls this when an order ships. Signed with the store's webhook secret."""
     if platform not in stores.PLATFORMS:
         raise HTTPException(404, "unknown platform")
     raw = await request.body()
@@ -481,7 +481,7 @@ async def store_test(platform: str, body: StoreTestIn, request: Request):
         raise HTTPException(409, "no unshipped order to fulfil; take a test payment first")
     payload = stores.sample_payload(platform, o)
     raw = json.dumps(payload).encode()
-    topic = "orders/fulfilled" if platform == "shopify" else "order.updated"
+    topic = "order.updated"
     signed = bool(stores.secret(platform))
     await pool.execute("insert into webhook_log (source, event, valid, reference) values ($1,$2,true,$3)",
                        platform, f"test: {topic}", str(payload["id"]))

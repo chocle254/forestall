@@ -367,7 +367,7 @@ export default function OrderDetail({ o, scenarios, epCodes, emailOn, onChange }
         </div>
         {o.watch_status === "watching" && o.next_check_at && <div><dt>Next check</dt><dd>{when(o.next_check_at)}</dd></div>}
         {o.store_platform && (
-          <div><dt>Store order</dt><dd>{o.store_platform === "shopify" ? "Shopify" : "WooCommerce"} #{o.store_order_id}</dd></div>
+          <div><dt>Store order</dt><dd>WooCommerce #{o.store_order_id}</dd></div>
         )}
         <div>
           <dt>Buyer's tracking page</dt>

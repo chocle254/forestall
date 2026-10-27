@@ -5,15 +5,6 @@ import {
 import { Icon, PageHead, go, when } from "./ui";
 
 const STORE: Record<StorePlatform, { name: string; steps: string[]; env: string }> = {
-  shopify: {
-    name: "Shopify",
-    env: "SHOPIFY_WEBHOOK_SECRET",
-    steps: [
-      "In Shopify admin, open Settings → Notifications → Webhooks.",
-      "Create a webhook for “Order fulfillment” (orders/fulfilled), format JSON, with the URL below.",
-      "Copy the signing secret Shopify shows under the list and set it as SHOPIFY_WEBHOOK_SECRET.",
-    ],
-  },
   woocommerce: {
     name: "WooCommerce",
     env: "WOOCOMMERCE_WEBHOOK_SECRET",
