@@ -58,6 +58,12 @@ export type Findings = {
   confidence: string;
 };
 
+export type TestOrder = {
+  paypal_order_id: string;
+  item: { sku: string; name: string; price: number };
+  approve_url: string;
+};
+
 export type Scenario = { id: string; label: string };
 
 export type CheckResult = {

@@ -2,8 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Forestall watches every PayPal order and stops item-not-received disputes before buyers file them." />
+    <meta name="theme-color" content="#f5f6f4" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d1210" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23116149'/%3E%3Cpath d='M16 6 9 17h4.5L10 24h12l-3.5-7H23z' fill='%23fff'/%3E%3Crect x='15' y='23' width='2' height='4' rx='1' fill='%23fff'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400..700&display=swap" rel="stylesheet" />
     <title>Forestall</title>
+    <script>
+      // Apply the saved theme before first paint to avoid a flash.
+      try { var t = localStorage.getItem("forestall-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
