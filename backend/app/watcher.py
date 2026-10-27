@@ -13,7 +13,7 @@ Every step is written to `order_timeline`, which is the proof that the order was
 import json
 from datetime import datetime, timedelta, timezone
 
-from . import ai, db, easypost, paypal, recommend, risk, simulator
+from . import ai, db, easypost, emails, paypal, recommend, risk, simulator
 
 NO_TRACKING_AFTER = timedelta(hours=48)
 STALL_AFTER = timedelta(hours=72)
@@ -75,6 +75,7 @@ async def ship(order_id: str, scenario: str | None = None, carrier: str = "USPS"
 
     if attach_to_paypal:
         await attach_tracking(order_id, actor="seller")
+    await emails.shipping_confirmation(order_id)
     return await check(order_id, trigger="shipped")
 
 
@@ -123,6 +124,7 @@ async def ship_with_easypost(order_id: str, tracking_code: str, carrier: str = "
     await ingest_easypost(order_id, tracker)
     if attach_to_paypal:
         await attach_tracking(order_id, actor="seller")
+    await emails.shipping_confirmation(order_id)
     return await check(order_id, trigger="shipped")
 
 

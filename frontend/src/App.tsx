@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import RiskQueue from "./RiskQueue";
 import Disputes from "./Disputes";
 import OrderDetail, { type EpCode } from "./OrderDetail";
+import Connect from "./Connect";
+import TrackPage from "./TrackPage";
 import {
   createCardOrder, createTestOrder, getDisputes, getEasyPostCodes, getHealth, getOrders, getReport, getScenarios,
   nudgeWatcher, type Dispute, type Health, type Order, type Report, type Scenario,
@@ -185,6 +187,7 @@ function SystemPage({ health, error, onRecheck }: { health: Health | null; error
     ["PayPal", health.paypal, `Mode: ${health.paypal_env}`],
     ["AI", health.ai, health.ai_model],
     ["Carrier API", health.easypost, `EasyPost${health.easypost_mode ? ` (${health.easypost_mode} mode)` : ""}`],
+    ["Buyer email", health.email, health.email === "ok" ? (health.email_redirect ? "SMTP · sandbox inbox" : "SMTP") : "SMTP not set up"],
   ] : [];
   return (
     <>
@@ -215,10 +218,18 @@ const NAV: [string, string, string][] = [
   ["overview", "home", "Overview"],
   ["orders", "orders", "Orders"],
   ["disputes", "dispute", "Disputes"],
+  ["connect", "plug", "Connect"],
   ["system", "status", "System"],
 ];
 
 export default function App() {
+  // The buyer's tracking page is public and has no seller chrome.
+  const track = window.location.pathname.match(/^\/track\/([A-Za-z0-9]+)/);
+  if (track) return <TrackPage token={track[1]} />;
+  return <SellerApp />;
+}
+
+function SellerApp() {
   const [themePref, setThemePref] = useTheme();
   const route = useRoute();
   const page = route[0];
@@ -252,12 +263,13 @@ export default function App() {
   const openDisputes = disputes.filter((d) => d.status !== "RESOLVED").length;
   const badge: Record<string, number> = { orders: attention, disputes: openDisputes };
   const sandbox = health?.paypal_env === "sandbox";
-  const navPage = page === "orders" || page === "disputes" || page === "system" ? page : "overview";
+  const navPage = ["orders", "disputes", "connect", "system"].includes(page) ? page : "overview";
 
   let body;
   if (page === "orders" && route[1]) {
     body = orders === null ? <div className="skeleton" style={{ height: 320 }} />
-      : <OrderDetail o={orders.find((o) => o.id === route[1]) ?? null} scenarios={scenarios} epCodes={epCodes} onChange={refresh} />;
+      : <OrderDetail o={orders.find((o) => o.id === route[1]) ?? null} scenarios={scenarios} epCodes={epCodes}
+                       emailOn={health?.email === "ok"} onChange={refresh} />;
   } else if (page === "orders") {
     body = (
       <>
@@ -270,6 +282,8 @@ export default function App() {
     );
   } else if (page === "disputes") {
     body = <Disputes items={disputes} onChange={refresh} />;
+  } else if (page === "connect") {
+    body = <Connect onChange={refresh} />;
   } else if (page === "system") {
     body = <SystemPage health={health} error={error} onRecheck={loadHealth} />;
   } else {

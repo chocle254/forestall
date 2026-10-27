@@ -16,9 +16,11 @@ function parseChoice(v: string): ShipChoice {
 const KIND_ICON: Record<string, string> = {
   paid: "card", shipped: "box", scan: "truck", delivered: "pin", buyer_message: "chat", check: "search",
   flag: "alert", flag_cleared: "check", paypal: "shield", action: "hand", protected: "shield", investigation: "sparkle",
+  email: "mail", store: "store", webhook: "bolt",
 };
 const KIND_TONE: Record<string, string> = {
   flag: "danger", flag_cleared: "ok", paypal: "ok", protected: "ok", investigation: "ai", action: "accent", buyer_message: "warn",
+  email: "accent", store: "accent",
 };
 
 const RESOLUTION_LABEL: Record<string, string> = {
@@ -89,7 +91,7 @@ function Findings({ o }: { o: Order }) {
   );
 }
 
-function FixDetails({ o }: { o: Order }) {
+function FixDetails({ o, emailOn }: { o: Order; emailOn: boolean }) {
   const p = o.action_params!;
   return (
     <div className="fix-body">
@@ -108,7 +110,9 @@ function FixDetails({ o }: { o: Order }) {
       {o.action_type === "message_buyer" && (
         <>
           <blockquote className="msg">“{String(p.message)}”</blockquote>
-          <p className="small muted">You send this message. PayPal has no messaging API before a dispute, so Forestall records that it was sent.</p>
+          <p className="small muted">{emailOn
+            ? "Forestall emails this from your shop's address, with a link to the buyer's tracking page where they can reply."
+            : "You send this message (email isn't set up). PayPal has no messaging API before a dispute, so Forestall records that it was sent."}</p>
         </>
       )}
       {o.action_justification && <p className="small"><b>Why this fix:</b> {o.action_justification}</p>}
@@ -117,7 +121,7 @@ function FixDetails({ o }: { o: Order }) {
   );
 }
 
-function ActionPanel({ o, onChange }: { o: Order; onChange: () => void }) {
+function ActionPanel({ o, emailOn, onChange }: { o: Order; emailOn: boolean; onChange: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -145,7 +149,7 @@ function ActionPanel({ o, onChange }: { o: Order; onChange: () => void }) {
 
   const approve = () =>
     run("approve", async () => {
-      if (o.action_type === "message_buyer") {
+      if (o.action_type === "message_buyer" && !emailOn) {
         try { await navigator.clipboard.writeText(String(p.message)); } catch { /* clipboard may be blocked */ }
       }
       return approveAction(id);
@@ -169,7 +173,7 @@ function ActionPanel({ o, onChange }: { o: Order; onChange: () => void }) {
           <span className="panel-title"><Icon name="bolt" />{o.action_is_followup ? "Buyer's choice" : "Recommended fix"}: {FIX_TITLE[o.action_type]}</span>
           <span className="tag">{o.action_edited ? "Edited · " : ""}Awaiting approval</span>
         </div>
-        {!editing ? <FixDetails o={o} /> : (
+        {!editing ? <FixDetails o={o} emailOn={emailOn} /> : (
           <div className="form">
             {(o.action_type === "message_buyer" || o.action_type.endsWith("refund")) && (
               <label>
@@ -191,7 +195,7 @@ function ActionPanel({ o, onChange }: { o: Order; onChange: () => void }) {
             <>
               <button className="btn primary" onClick={approve} disabled={!!busy}>
                 <Icon name="check" size={16} />
-                {busy === "approve" ? "Working…" : o.action_type === "message_buyer" ? "Approve, copy and mark sent" : "Approve and run on PayPal"}
+                {busy === "approve" ? "Working…" : o.action_type === "message_buyer" ? (emailOn ? "Approve and email the buyer" : "Approve, copy and mark sent") : "Approve and run on PayPal"}
               </button>
               {o.action_type !== "attach_tracking" && o.action_type !== "ship_replacement" && (
                 <button className="btn" onClick={startEdit} disabled={!!busy}>Edit</button>
@@ -321,8 +325,8 @@ function SandboxControls({ o, scenarios, epCodes, onDone }: {
   );
 }
 
-export default function OrderDetail({ o, scenarios, epCodes, onChange }: {
-  o: Order | null; scenarios: Scenario[]; epCodes: EpCode[]; onChange: () => void;
+export default function OrderDetail({ o, scenarios, epCodes, emailOn, onChange }: {
+  o: Order | null; scenarios: Scenario[]; epCodes: EpCode[]; emailOn: boolean; onChange: () => void;
 }) {
   const [version, setVersion] = useState(0);
   if (!o) {
@@ -362,6 +366,13 @@ export default function OrderDetail({ o, scenarios, epCodes, onChange }: {
             ? <a href={o.tracking_public_url} target="_blank" rel="noreferrer">{carrier} <Icon name="external" size={13} /></a> : carrier}</dd>
         </div>
         {o.watch_status === "watching" && o.next_check_at && <div><dt>Next check</dt><dd>{when(o.next_check_at)}</dd></div>}
+        {o.store_platform && (
+          <div><dt>Store order</dt><dd>{o.store_platform === "shopify" ? "Shopify" : "WooCommerce"} #{o.store_order_id}</dd></div>
+        )}
+        <div>
+          <dt>Buyer's tracking page</dt>
+          <dd><a href={`/track/${o.track_token}`} target="_blank" rel="noreferrer">Open <Icon name="external" size={13} /></a></dd>
+        </div>
       </dl>
 
       <div className="detail-grid">
@@ -376,7 +387,7 @@ export default function OrderDetail({ o, scenarios, epCodes, onChange }: {
             </section>
           )}
           <Findings o={o} />
-          <ActionPanel o={o} onChange={refresh} />
+          <ActionPanel o={o} emailOn={emailOn} onChange={refresh} />
           {!o.flag_reason && !o.action_type && o.watch_status === "watching" && (
             <section className="panel tone-ok">
               <div className="panel-head"><span className="panel-title"><Icon name="check" />On track</span></div>

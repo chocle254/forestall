@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from . import ai, db, easypost, paypal, recommend, watcher
+from . import ai, db, easypost, emails, paypal, recommend, watcher
 
 TITLES = {
     "attach_tracking": "attach tracking to PayPal",
@@ -144,10 +144,15 @@ async def _execute(a, o, p) -> tuple[dict, str]:
             "refunded" if kind == "full_refund" else "goodwill_refund")
 
     if kind == "message_buyer":
+        # Email it when SMTP is set up; otherwise the seller sends it and Forestall records it.
+        mail = await emails.seller_message(o, str(p.get("message"))) if emails.configured() else {"sent": False}
+        channel = "email" if mail.get("sent") else "seller"
+        title = "Message emailed to the buyer" if channel == "email" else "Message sent to the buyer (by the seller)"
         async with pool.acquire() as conn:
-            await watcher.log(conn, o["id"], "action", "Message sent to the buyer (by the seller)",
-                              {"message": p.get("message"), "offers": p.get("offers"), "awaiting_reply": True}, now)
-        return {"sent": True, "channel": "seller", "offers": p.get("offers")}, "awaiting_buyer_reply"
+            await watcher.log(conn, o["id"], "action", title,
+                              {"message": p.get("message"), "offers": p.get("offers"), "awaiting_reply": True,
+                               "channel": channel}, now)
+        return {"sent": True, "channel": channel, "email": mail, "offers": p.get("offers")}, "awaiting_buyer_reply"
 
     if kind == "ship_replacement":
         res = await ship_replacement(o)

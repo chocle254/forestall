@@ -163,6 +163,12 @@ PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREAT
 - Every assessment is stored with its input and model (`assessments` table): an audit trail and a cache, so unchanged orders don't spend another AI call.
 - The AI never calls PayPal. It only proposes; the backend acts after the seller approves.
 
+## Store connection, buyer email and tracking page
+
+- **Store connection (Shopify, WooCommerce).** When the seller fulfils an order in their store, the store sends a signed webhook to `/api/webhooks/shopify` or `/api/webhooks/woocommerce`. Forestall checks the signature, matches the store order to the PayPal order (by PayPal order or capture ID, then buyer email and amount), marks it shipped with the store's tracking number, attaches the tracking to PayPal and starts watching. Set-up steps and the webhook URLs are on the **Connect** page, which also has a **Send a test fulfilment** button that runs a store-shaped, signed payload through the same code.
+- **Buyer email (SMTP).** Buyers get an automatic shipping confirmation, and any buyer message the seller approves is emailed from the shop's address. Set the `SMTP_*` variables in `backend/.env.example`. In the sandbox, set `EMAIL_REDIRECT_TO` to your own inbox. Email is best effort: a failure is logged on the order's timeline and never blocks a fix.
+- **Buyer tracking page.** Every order has a private page at `/track/<code>` (linked in the emails) with the parcel's progress, scans and the conversation. The buyer can reply there, or tap one of the options the seller offered. The AI reads the reply, and any refund or replacement still waits for the seller's approval.
+
 ## Run and deploy
 
 1. Import this repo into Vercel at the repo root. `vercel.json` defines both services.

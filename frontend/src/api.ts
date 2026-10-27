@@ -10,6 +10,8 @@ export type Health = {
   ai_model: string;
   easypost: string;
   easypost_mode: string | null;
+  email: string;
+  email_redirect: boolean;
 };
 
 export type Order = {
@@ -44,6 +46,9 @@ export type Order = {
   carrier_source: "simulator" | "easypost" | "manual";
   tracking_public_url: string | null;
   carrier: string | null;
+  track_token: string;
+  store_platform: "shopify" | "woocommerce" | null;
+  store_order_id: string | null;
   findings: Findings | null;
   tools_used: string[];
 };
@@ -183,3 +188,46 @@ export const editDisputeNotes = (id: string, notes: string) =>
 export const submitDispute = (id: string) =>
   post<{ status: string; how?: string; paypal_error?: unknown }>(`/api/disputes/${id}/submit`);
 export const evidencePdfUrl = (id: string) => `${API_URL}/api/disputes/${id}/evidence.pdf`;
+
+// --- Store connections, email, and the buyer's tracking page ---
+
+export type StorePlatform = "shopify" | "woocommerce";
+export type StoreStatus = {
+  platform: StorePlatform;
+  secret_set: boolean;
+  linked_orders: number;
+  webhook_url: string;
+  last_event: { event: string | null; valid: boolean; received_at: string } | null;
+};
+export const getStores = () => call<StoreStatus[]>("/api/stores");
+export const testStore = (platform: StorePlatform, orderId?: string) =>
+  post<{ signed: boolean; result: { order_id?: string; shipped?: boolean; matched_by?: string; ignored?: string } }>(
+    `/api/stores/${platform}/test`, { order_id: orderId ?? null });
+
+export type EmailStatus = {
+  status: string; host: string | null; from: string | null; redirect_to: string | null;
+  auto_shipping_email: boolean; store_name: string;
+};
+export const getEmail = () => call<EmailStatus>("/api/email");
+export const testEmail = () => post<{ sent: boolean; to: string }>("/api/email/test");
+
+export type TrackInfo = {
+  store_name: string;
+  buyer_first_name: string | null;
+  amount: string;
+  currency: string;
+  paid_at: string;
+  shipped_at: string | null;
+  headline: string;
+  delivered: boolean;
+  carrier: string | null;
+  tracking_number: string | null;
+  carrier_url: string | null;
+  events: { status: string; location: string | null; at: string }[];
+  messages: { from: "buyer" | "seller"; text: string; at: string }[];
+  awaiting_reply: boolean;
+  offers: string[];
+};
+export const getTrack = (token: string) => call<TrackInfo>(`/api/track/${encodeURIComponent(token)}`);
+export const sendTrackReply = (token: string, text: string) =>
+  post<{ received: boolean }>(`/api/track/${encodeURIComponent(token)}/reply`, { text });

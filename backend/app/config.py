@@ -25,6 +25,25 @@ class Settings(BaseSettings):
     # EasyPost (carrier tracking). Test keys start with EZTK.
     easypost_api_key: str = ""
 
+    # Buyer emails over SMTP. Port 587 uses STARTTLS, 465 uses SSL.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""            # e.g. orders@yourshop.com
+    smtp_reply_to: str = ""        # where buyers' email replies go (default: smtp_from)
+    smtp_starttls: bool = True
+    # Sandbox: send every buyer email here instead (sandbox buyer addresses don't receive mail).
+    email_redirect_to: str = ""
+    auto_shipping_email: bool = True
+    store_name: str = "Forestall Demo Shop"
+    # Public URL used in email links (default: the URL the request came in on).
+    public_url: str = ""
+
+    # Store connections: the webhook signing secret from each store's admin.
+    shopify_webhook_secret: str = ""
+    woocommerce_webhook_secret: str = ""
+
     # Comma-separated origins allowed to call the API (the Vercel frontend).
     cors_origins: str = "http://localhost:5173"
 

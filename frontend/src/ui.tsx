@@ -31,6 +31,9 @@ const PATHS: Record<string, ReactNode> = {
   forward: <path d="m5 5 7 7-7 7M13 5l7 7-7 7" />,
   doc: <><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z" /><path d="M14 3v5h5M9 13h6M9 17h4" /></>,
   x: <path d="M6 6l12 12M18 6 6 18" />,
+  plug: <><path d="M9 2v5M15 2v5M6 7h12v4a6 6 0 0 1-12 0z" /><path d="M12 17v5" /></>,
+  mail: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></>,
+  store: <><path d="M4 9 5.5 4h13L20 9" /><path d="M4 9h16v2a3 3 0 0 1-5.3 2A3 3 0 0 1 12 14a3 3 0 0 1-2.7-1A3 3 0 0 1 4 11z" /><path d="M5 13.5V20h14v-6.5" /></>,
 };
 
 export function Icon({ name, size = 18, className }: { name: string; size?: number; className?: string }) {

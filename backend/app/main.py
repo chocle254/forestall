@@ -8,7 +8,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from pydantic import BaseModel
 
-from . import actions, ai, db, disputes, easypost, investigate, orders, paypal, recommend, risk, simulator, watcher
+from . import (actions, ai, db, disputes, easypost, emails, investigate, orders, paypal, recommend, risk, simulator,
+               stores, watcher)
 from .config import settings
 
 app = FastAPI(title="Forestall API", version="0.2.0")
@@ -24,6 +25,16 @@ app.add_middleware(
 async def unhandled(request: Request, exc: Exception):
     # Always answer with JSON, so the app can show what went wrong.
     return JSONResponse(status_code=500, content={"detail": f"Server error: {type(exc).__name__}: {str(exc)[:200]}"})
+
+
+@app.middleware("http")
+async def remember_origin(request: Request, call_next):
+    # Links in buyer emails point back at the deployment the request came in on.
+    token = emails.ORIGIN.set(_origin(request))
+    try:
+        return await call_next(request)
+    finally:
+        emails.ORIGIN.reset(token)
 
 
 # On Vercel, every request under /api/* is routed to this app with its full path.
@@ -49,6 +60,8 @@ async def health():
         "ai_model": ai.model_name(),
         "easypost": await easypost.check(),
         "easypost_mode": "test" if easypost.test_mode() else ("live" if easypost.configured() else None),
+        "email": emails.status(),
+        "email_redirect": bool(settings.email_redirect_to),
     }
 
 
@@ -62,7 +75,7 @@ async def list_orders():
         select o.id, o.paypal_order_id, o.capture_id, o.buyer_name, o.buyer_email, o.amount, o.currency,
                o.captured_at, o.tracking_number, o.tracking_attached_at, o.demo_shift_hours,
                o.shipped_at, o.watch_status, o.next_check_at, o.demo_scenario,
-               o.carrier_source, o.tracking_public_url, o.carrier,
+               o.carrier_source, o.tracking_public_url, o.carrier, o.track_token, o.store_platform, o.store_order_id,
                f.risk_level, f.signal, f.reason as flag_reason, f.updated_at as flagged_at,
                a.id as action_id, a.type as action_type, a.params as action_params,
                a.justification as action_justification, a.status as action_status,
@@ -410,6 +423,180 @@ async def paypal_webhook(request: Request):
         out = await disputes.upsert_from_paypal(d)
         return {"dispute": out["paypal_dispute_id"], "status": out["status"]}
     return {"ignored": etype}
+
+
+# --- Store connections (Shopify, WooCommerce) ----------------------------------
+
+@api.get("/stores")
+async def store_status(request: Request):
+    base = _origin(request)
+    return [{**s, "webhook_url": f"{base}/api/webhooks/{s['platform']}"} for s in await stores.status()]
+
+
+@api.post("/webhooks/{platform}")
+async def store_webhook(platform: str, request: Request):
+    """Shopify / WooCommerce call this when an order ships. Signed with the store's webhook secret."""
+    if platform not in stores.PLATFORMS:
+        raise HTTPException(404, "unknown platform")
+    raw = await request.body()
+    topic = request.headers.get(stores.TOPIC_HEADER[platform])
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(503, "database not configured")
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        payload = None
+    if payload is None:
+        # WooCommerce pings a new webhook with a form body (webhook_id=...); just say hello.
+        await pool.execute("insert into webhook_log (source, event, valid, reference) values ($1,'ping',true,null)", platform)
+        return {"ok": True}
+    valid = stores.verify(platform, raw, request.headers.get(stores.SIGNATURE_HEADER[platform]))
+    await pool.execute("insert into webhook_log (source, event, valid, reference) values ($1,$2,$3,$4)",
+                       platform, topic, valid, str(payload.get("id") or payload.get("order_id") or ""))
+    if not valid:
+        raise HTTPException(401, "bad signature" if stores.secret(platform) else f"{platform} webhook secret is not set")
+    try:
+        return await stores.handle(platform, payload, topic, webhook_url=f"{_origin(request)}/api/webhooks/easypost")
+    except Exception as e:
+        _watch_errors(e)
+
+
+class StoreTestIn(BaseModel):
+    order_id: str | None = None
+
+
+@api.post("/stores/{platform}/test")
+async def store_test(platform: str, body: StoreTestIn, request: Request):
+    """Demo: send a signed, store-shaped fulfillment webhook for an unshipped order through the real handler."""
+    if platform not in stores.PLATFORMS:
+        raise HTTPException(404, "unknown platform")
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(503, "database not configured")
+    o = await pool.fetchrow(
+        "select * from orders where watch_status='not_shipped' and ($1::text is null or id::text=$1)"
+        " order by captured_at desc limit 1", body.order_id)
+    if not o:
+        raise HTTPException(409, "no unshipped order to fulfil; take a test payment first")
+    payload = stores.sample_payload(platform, o)
+    raw = json.dumps(payload).encode()
+    topic = "orders/fulfilled" if platform == "shopify" else "order.updated"
+    signed = bool(stores.secret(platform))
+    await pool.execute("insert into webhook_log (source, event, valid, reference) values ($1,$2,true,$3)",
+                       platform, f"test: {topic}", str(payload["id"]))
+    try:
+        result = await stores.handle(platform, payload, topic, webhook_url=f"{_origin(request)}/api/webhooks/easypost")
+    except Exception as e:
+        _watch_errors(e)
+    return {"signed": signed, "payload": payload, "signature": stores.sign(platform, raw) if signed else None,
+            "result": result}
+
+
+# --- Email (SMTP) --------------------------------------------------------------
+
+@api.get("/email")
+async def email_status():
+    return {"status": emails.status(), "host": settings.smtp_host or None, "from": settings.smtp_from or None,
+            "redirect_to": settings.email_redirect_to or None, "auto_shipping_email": settings.auto_shipping_email,
+            "store_name": settings.store_name}
+
+
+@api.post("/email/test")
+async def email_test():
+    """Send a test email to the seller's own address (never to an address from the request)."""
+    try:
+        return await emails.send_test()
+    except ValueError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"SMTP failed: {type(e).__name__}: {str(e)[:200]}")
+
+
+# --- The buyer's tracking page (public, by unguessable code) --------------------
+
+TRACK_STATUS = {
+    "label_created": "Label created", "in_transit": "In transit", "stalled": "In transit",
+    "out_for_delivery": "Out for delivery", "delivered": "Delivered", "exception": "Delivery problem",
+    "failure": "Delivery problem", "return_to_sender": "Returning to sender", "pre_transit": "Label created",
+    "available_for_pickup": "Ready for pickup",
+}
+
+
+async def _track_order(token: str):
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(503, "database not configured")
+    o = await pool.fetchrow("select * from orders where track_token=$1", token)
+    if not o or len(token) < 20:
+        raise HTTPException(404, "tracking page not found")
+    return pool, o
+
+
+@api.get("/track/{token}")
+async def track_page(token: str):
+    """What the buyer sees: parcel status, scans, and the conversation. No internal risk notes."""
+    pool, o = await _track_order(token)
+    events = await pool.fetch("select status, location, occurred_at from shipment_events where order_id=$1"
+                              " order by occurred_at desc", o["id"])
+    convo = await pool.fetch(
+        """select kind, detail, occurred_at from order_timeline where order_id=$1 and
+           (kind='buyer_message' or (kind='action' and detail ? 'message' and detail->>'awaiting_reply'='true'))
+           order by occurred_at, recorded_at""", o["id"])
+    latest = events[0]["status"] if events else None
+    if o["watch_status"] == "closed" and o["resolution"] == "refunded":
+        headline = "Refunded"
+    elif o["watch_status"] == "not_shipped":
+        headline = "Preparing your order"
+    elif latest:
+        headline = TRACK_STATUS.get(latest, latest.replace("_", " ").capitalize())
+    else:
+        headline = "Shipped"
+    offers = []
+    if o["resolution"] == "awaiting_buyer_reply":
+        p = await pool.fetchval("select params from actions where order_id=$1 and type='message_buyer'"
+                                " and status='executed' order by executed_at desc limit 1", o["id"])
+        offers = (json.loads(p) if isinstance(p, str) else p or {}).get("offers") or []
+    messages = []
+    for r in convo:
+        d = json.loads(r["detail"])
+        messages.append({"from": "buyer" if r["kind"] == "buyer_message" else "seller",
+                         "text": d.get("text") if r["kind"] == "buyer_message" else d.get("message"),
+                         "at": r["occurred_at"]})
+    return {
+        "store_name": settings.store_name, "buyer_first_name": (o["buyer_name"] or "").split(" ")[0] or None,
+        "amount": o["amount"], "currency": o["currency"], "paid_at": o["captured_at"],
+        "shipped_at": o["shipped_at"], "headline": headline, "delivered": latest == "delivered",
+        "carrier": o["carrier"], "tracking_number": o["tracking_number"], "carrier_url": o["tracking_public_url"],
+        "events": [{"status": TRACK_STATUS.get(e["status"], e["status"].replace("_", " ").capitalize()),
+                    "location": e["location"], "at": e["occurred_at"]} for e in events],
+        "messages": messages, "awaiting_reply": o["resolution"] == "awaiting_buyer_reply",
+        "offers": [x for x in offers if x != "info_only"],
+    }
+
+
+@api.post("/track/{token}/reply")
+async def track_reply(token: str, body: ReplyIn):
+    """The buyer writes from their tracking page. The AI reads it; any fix still waits for the seller."""
+    pool, o = await _track_order(token)
+    text = body.text.strip()[:1000]
+    if not text:
+        raise HTTPException(400, "empty message")
+    recent = await pool.fetchval("select count(*) from order_timeline where order_id=$1 and kind='buyer_message'"
+                                 " and recorded_at > now() - interval '1 hour'", o["id"])
+    if recent >= 10:
+        raise HTTPException(429, "too many messages; please wait a little")
+    try:
+        r = await actions.buyer_reply(str(o["id"]), text)
+    except ai.AIUnavailable:
+        r = {"recorded": True}
+    # A message out of the blue (not a reply to an offer) is a risk signal: check the order now.
+    if r.get("intent") is None and o["watch_status"] == "watching":
+        try:
+            await watcher.check(o["id"], trigger="buyer wrote from tracking page")
+        except Exception:
+            pass  # the scheduled sweep will pick it up
+    return {"received": True}
 
 
 # --- Disputes (slice 9) ----------------------------------------------------------
