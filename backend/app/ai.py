@@ -132,8 +132,10 @@ def _strip_fences(text: str) -> str:
 
 
 async def run_agent(system: str, user: str, tools: list[dict], handlers: dict, schema: type[T],
-                    max_steps: int = 8) -> tuple[T, list[dict]]:
-    """OpenAI-style tool calling. Returns (validated answer, trace of tool calls)."""
+                    max_steps: int = 8, required_tools: tuple[str, ...] = ()) -> tuple[T, list[dict]]:
+    """OpenAI-style tool calling. Returns (validated answer, trace of tool calls).
+
+    required_tools: the agent may not answer before calling these (it is sent back once to call them)."""
     global last_model_used
     if not configured():
         raise AIUnavailable("AI is not configured (set GROQ_API_KEY)")
@@ -144,6 +146,7 @@ async def run_agent(system: str, user: str, tools: list[dict], handlers: dict, s
     trace: list[dict] = []
     models = [m for m in (settings.ai_model, settings.ai_fallback_model) if m]
     model = models[0]
+    nudged = False
 
     for _ in range(max_steps):
         body: dict = {"model": model, "messages": messages, "tools": tools, "tool_choice": "auto", "temperature": 0.2}
@@ -167,6 +170,13 @@ async def run_agent(system: str, user: str, tools: list[dict], handlers: dict, s
             raise AIUnavailable(f"AI returned {r.status_code}: {r.text[:200]}")
         msg = r.json()["choices"][0]["message"]
         calls = msg.get("tool_calls") or []
+        missing = [t for t in required_tools if t not in {x["tool"] for x in trace}]
+        if not calls and missing and not nudged:
+            nudged = True
+            messages.append({"role": "assistant", "content": msg.get("content") or ""})
+            messages.append({"role": "user", "content": "Before answering, check the live sources: call "
+                             + ", ".join(missing) + ". Then answer with the JSON."})
+            continue
         if not calls:
             content = _strip_fences(msg.get("content") or "")
             try:

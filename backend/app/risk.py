@@ -60,10 +60,11 @@ What you know about INR disputes:
   prevents most of them.
 
 How to investigate (call several tools at once when you can):
-- Always check the carrier tracking and the live PayPal order (is the tracking on the transaction? where is
-  the buyer?).
+- Always call get_carrier_tracking and get_paypal_order first, even if the brief seems to answer it: the brief
+  is Forestall's copy, the tools are the live sources. Is the tracking on the transaction? Where is the buyer?
 - Judge delay against the carrier's own expected delivery date and the scan pattern, not a fixed number of
-  days. If the parcel sits at a facility, check that facility's service alerts.
+  days. If the parcel sits at a facility, call get_carrier_facility_status for it.
+- Tag each step with the source you actually got it from (the tool's source, not "forestall").
 - If the carrier says delivered, compare the proof of delivery (GPS distance, photo) with the PayPal shipping
   address.
 - Read the buyer's messages for tone, needs and deadlines, and whether they were answered.
@@ -158,7 +159,8 @@ async def assess(order_id: str, force: bool = False) -> dict:
         now = datetime.now(timezone.utc) + timedelta(hours=order["demo_shift_hours"])
         brief = {"buyer_name": order["buyer_name"], "now": now.isoformat(), **context}
         a, trace = await ai.run_agent(SYSTEM, "Check this order:\n" + json.dumps(brief, indent=2, default=str),
-                                      investigate.TOOLS, investigate.tool_handlers(order, pool, now), Assessment)
+                                      investigate.TOOLS, investigate.tool_handlers(order, pool, now), Assessment,
+                                      required_tools=("get_carrier_tracking", "get_paypal_order"))
         a.next_check_in_hours = max(1, min(24, a.next_check_in_hours))
         result = a.model_dump()
         result["tools_used"] = [t["tool"] for t in trace]
