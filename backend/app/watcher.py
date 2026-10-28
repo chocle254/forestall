@@ -2,10 +2,12 @@
 
 An order is checked:
   - when something happens (new carrier scan, buyer message, seller action), and
-  - when time alone creates risk: 48h without tracking on PayPal, 72h without a scan,
-    and 24h after delivery (the quiet period before we call it protected).
-Each check stores `next_check_at`, the moment the next threshold is crossed, so the
-scheduled sweep only touches orders that are actually due.
+  - when the AI asked to look again. Every check is an AI investigation (risk.py), and the
+    agent itself decides when the next one should be and why (for example "just after the
+    carrier's expected delivery date"). Code only caps the gap at 24 hours.
+The order closes as protected when the AI judges it safe AND PayPal confirms the tracking
+is on the transaction AND the buyer has had a day since delivery to report a problem.
+The AI can't close an order without that proof.
 
 Every step is written to `order_timeline`, which is the proof that the order was followed.
 """
@@ -15,10 +17,9 @@ from datetime import datetime, timedelta, timezone
 
 from . import ai, db, easypost, emails, paypal, recommend, risk, simulator
 
-NO_TRACKING_AFTER = timedelta(hours=48)
-STALL_AFTER = timedelta(hours=72)
-QUIET_AFTER_DELIVERY = timedelta(hours=24)
-MAX_GAP = timedelta(hours=12)  # never go longer than this between checks
+# Safety rails around the AI's decisions (not risk rules):
+MAX_GAP = timedelta(hours=24)               # never go longer than this between checks, whatever the AI says
+QUIET_AFTER_DELIVERY = timedelta(hours=24)  # give the buyer a day to report a problem before closing
 
 
 async def log(conn, order_id, kind: str, title: str, detail: dict | None = None, at: datetime | None = None):
@@ -226,8 +227,11 @@ async def check(order_id: str, trigger: str = "scheduled") -> dict:
     async with pool.acquire() as conn:
         o = await conn.fetchrow("select * from orders where id=$1", order_id)
         now = _now(o)
-        await log(conn, order_id, "check", f"AI check: {a['risk_level']} risk",
+        await log(conn, order_id, "check", f"AI investigated: {a['risk_level']} risk",
                   {"trigger": trigger, "risk_level": a["risk_level"], "signal": a["signal"], "reason": a["reason"],
+                   "summary": a.get("summary"), "steps": a.get("steps"), "tools_used": a.get("tools_used"),
+                   "buyer_mood": a.get("buyer_mood"), "next_check_reason": a.get("next_check_reason"),
+                   "safe_to_close": a.get("safe_to_close"), "model": a.get("model"),
                    "cached": a["cached"], "new_events": new_events}, now)
 
         flag = a["flag"]
@@ -247,14 +251,19 @@ async def check(order_id: str, trigger: str = "scheduled") -> dict:
         events = await conn.fetch("select status, occurred_at from shipment_events where order_id=$1 order by occurred_at", order_id)
         delivered_at = next((e["occurred_at"] for e in events if e["status"] == "delivered"), None)
 
-        # Protected: delivered, proof on PayPal, no open risk, and a quiet day has passed.
-        if delivered_at and o["tracking_attached_at"] and not flag and now >= delivered_at + QUIET_AFTER_DELIVERY:
+        # Protected: the AI judges the order safe, and PayPal itself confirms the tracking is on the transaction.
+        if (a.get("safe_to_close") and delivered_at and o["tracking_attached_at"] and not flag
+                and now >= delivered_at + QUIET_AFTER_DELIVERY):
             proof = await _paypal_proof(o)
-            await conn.execute("update orders set watch_status='protected', next_check_at=null where id=$1", order_id)
-            await log(conn, order_id, "protected", "Watch closed: delivered with proof on PayPal", proof, now)
-            return {**_summary(a), "watch_status": "protected", "proof": proof, "proposal": proposal}
+            if proof.get("trackers_on_paypal"):
+                await conn.execute("update orders set watch_status='protected', next_check_at=null where id=$1", order_id)
+                await log(conn, order_id, "protected", "Watch closed: delivered with proof on PayPal",
+                          {**proof, "ai_reason": a.get("next_check_reason")}, now)
+                return {**_summary(a), "watch_status": "protected", "proof": proof, "proposal": proposal}
 
-        nxt = _next_check(o, events, delivered_at, now)
+        nxt = _next_check(a, now)
+        if a.get("safe_to_close") and delivered_at and now < delivered_at + QUIET_AFTER_DELIVERY:
+            nxt = min(nxt, delivered_at + QUIET_AFTER_DELIVERY)  # the AI is ready to close: look again when allowed
         scans_done, msgs_done = len(events), await conn.fetchval("select count(*) from buyer_messages where order_id=$1", order_id)
         if o["demo_scenario"]:
             ev = simulator.next_event_time(o["demo_scenario"], o["captured_at"], scans_done, msgs_done)
@@ -286,17 +295,9 @@ async def _propose(order_id: str, now: datetime) -> dict | None:
         return None
     if p and str(before) != p["id"]:
         async with pool.acquire() as conn:
-            inv = await conn.fetchrow("select findings, tool_calls from investigations where id=$1",
-                                      p["investigation_id"]) if p.get("investigation_id") else None
-            if inv:
-                f = json.loads(inv["findings"])
-                tools = [t["tool"] for t in json.loads(inv["tool_calls"])]
-                await log(conn, order_id, "investigation", "Forestall investigated: " + f["parcel_status"].replace("_", " "),
-                          {"summary": f["summary"], "tools_used": tools, "evidence": f["evidence"],
-                           "investigation_id": p["investigation_id"]}, now)
             await log(conn, order_id, "action", ACTION_TITLE[p["type"]],
                       {"action_id": p["id"], "type": p["type"], "justification": p["justification"],
-                       "params": p["params"]}, now)
+                       "params": p["params"], "model": p.get("model")}, now)
     return p
 
 
@@ -327,19 +328,14 @@ async def _follow_original_parcel(order_id) -> None:
 
 
 def _summary(a: dict) -> dict:
-    return {k: a[k] for k in ("risk_level", "signal", "reason", "cached", "flag")}
+    return {k: a.get(k) for k in ("risk_level", "signal", "reason", "cached", "flag", "summary", "steps",
+                                  "next_check_reason", "model")}
 
 
-def _next_check(o, events, delivered_at, now: datetime) -> datetime:
-    candidates = [now + MAX_GAP]
-    if not o["tracking_attached_at"]:
-        candidates.append(o["captured_at"] + NO_TRACKING_AFTER)
-    if events and not delivered_at:
-        candidates.append(events[-1]["occurred_at"] + STALL_AFTER)
-    if delivered_at:
-        candidates.append(delivered_at + QUIET_AFTER_DELIVERY)
-    future = [c for c in candidates if c > now]
-    return min(future) if future else now + MAX_GAP
+def _next_check(a: dict, now: datetime) -> datetime:
+    """When the AI asked to look again, capped by the safety rail."""
+    hours = a.get("next_check_in_hours") or 12
+    return now + min(timedelta(hours=max(1, hours)), MAX_GAP)
 
 
 async def _paypal_proof(o) -> dict:

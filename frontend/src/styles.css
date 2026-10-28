@@ -328,6 +328,17 @@ textarea { resize: vertical; line-height: 1.5; }
 .src-paypal { background: var(--info-soft); color: var(--info); border-color: transparent; }
 .src-carrier { background: var(--surface-2); color: var(--text); }
 .src-buyer { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.src-seller_policy, .src-forestall { background: var(--ai-soft); color: var(--ai); border-color: transparent; }
+.ai-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; counter-reset: step; }
+.ai-steps li { display: grid; grid-template-columns: 74px 1fr; gap: 10px; align-items: start; font-size: 14px; min-width: 0; }
+.ai-steps li .src { justify-self: start; margin-top: 2px; }
+.ai-steps li > div { min-width: 0; overflow-wrap: anywhere; }
+.ai-decision { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--tone-soft); }
+.ai-decision > div { display: grid; gap: 1px; }
+.ai-decision b { text-transform: capitalize; }
+.ai-decision .risk-high { color: var(--danger); }
+.ai-decision .risk-medium { color: var(--warn); }
+.ai-decision .risk-low { color: var(--ok); }
 .sandbox-box { display: grid; gap: 8px; padding: 12px; border-radius: var(--radius-sm); border: 1px dashed var(--border-strong); background: var(--surface-2); }
 .sandbox-label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--warn); }
 

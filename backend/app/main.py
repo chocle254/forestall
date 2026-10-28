@@ -81,7 +81,8 @@ async def list_orders():
                a.justification as action_justification, a.status as action_status,
                a.edited as action_edited, a.parent_action_id is not null as action_is_followup,
                a.paypal_response as action_result, o.resolution, o.refunded_amount,
-               i.findings as findings, i.tool_calls as tool_calls
+               i.findings as findings, i.tool_calls as tool_calls, a.model as action_model,
+               la.result as ai_check, la.model as ai_model, la.created_at as ai_checked_at
         from orders o
         left join flags f on f.order_id = o.id and not f.resolved
         left join lateral (
@@ -89,6 +90,10 @@ async def list_orders():
           order by x.created_at desc limit 1
         ) a on true
         left join investigations i on i.id = a.investigation_id
+        left join lateral (
+          select result, model, created_at from assessments s where s.order_id = o.id
+          order by s.created_at desc limit 1
+        ) la on true
         order by o.captured_at desc limit 100
         """
     )
@@ -98,6 +103,7 @@ async def list_orders():
         d["action_params"] = json.loads(d["action_params"]) if d["action_params"] else None
         d["findings"] = json.loads(d["findings"]) if d["findings"] else None
         d["action_result"] = json.loads(d["action_result"]) if d["action_result"] else None
+        d["ai_check"] = json.loads(d["ai_check"]) if d["ai_check"] else None
         calls = json.loads(d.pop("tool_calls")) if d["tool_calls"] else []
         d["tools_used"] = [c["tool"] for c in calls]
         out.append(d)

@@ -46,21 +46,23 @@ Each lost dispute costs the refund, the item, dispute fees, and account standing
                           ──► seller submits via the Disputes API
 ```
 
-### Risk signals it watches (v1)
+### Risks the AI looks for
+
+There are no fixed "48 hours" or "3 days" rules. On every check the AI agent investigates with its tools and judges the order against the carrier's own expected delivery date, facility alerts, what PayPal holds and what the buyer said. The table shows typical outcomes, not triggers.
 
 | Signal | Example | Usual fix |
 |---|---|---|
-| No tracking attached | Captured 48h ago, no tracking on the PayPal transaction | Attach tracking (`POST /v2/checkout/orders/{id}/track`) |
-| Stalled shipment | No carrier update for 3+ days | Message the buyer with an update |
+| No tracking attached | Parcel is moving, but its tracking isn't on the PayPal transaction | Attach tracking (`POST /v2/checkout/orders/{id}/track`) |
+| Stalled shipment | No scans since Memphis, the hub has a backlog alert, and the expected date has passed | Message the buyer with an update |
 | Buyer concern | "Hi, any news on my order?" | Message the buyer, or a small partial refund |
 | Delivered but "not received" | Carrier says delivered, buyer says no | Message the buyer and prepare evidence |
 
 ### Where the AI fits
 
-The model does three narrow jobs, each returning structured JSON:
+The model does three jobs, each returning structured JSON:
 
-1. **Assess:** order + shipment events + buyer messages → risk level, signal, reason.
-2. **Recommend:** assessment → one action with exact parameters and a one-line justification.
+1. **Investigate and decide (agent with tools):** on every check it calls carrier tracking, facility alerts, the live PayPal order, buyer messages and the seller policy as it sees fit. It then decides the risk and why, the buyer's tone and needs, when to look again, and whether the order is safe to close.
+2. **Recommend:** investigation → one fix the AI chooses and writes, with exact parameters the backend fills and checks.
 3. **Draft evidence:** full order timeline → dispute response text + attachments list.
 
 The model never calls PayPal or holds credentials. It writes a *proposed* action; only the backend executes it, and only after the seller approves.
@@ -114,7 +116,7 @@ One screen, built around a single workflow. It's a work queue, not a dashboard o
 | Failure mode | What Forestall does | Effect |
 |---|---|---|
 | Tracking never attached | Flags it within 48h and attaches it through the API on approval | The proof is on the transaction **before** any dispute |
-| Stalled parcel | Flags it after 3 days without carrier movement | The seller reaches out first, so the buyer has less reason to dispute |
+| Stalled parcel | Flags it when the carrier's expected date, scans and facility alerts say it's late | The seller reaches out first, so the buyer has less reason to dispute |
 | Anxious buyer | Spots concern in messages and drafts a reply | The question gets answered instead of escalating |
 | Dispute opens anyway | Drafts evidence from the stored timeline | A complete response in minutes, not hours of digging |
 
@@ -150,9 +152,10 @@ PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREAT
 
 ## How Forestall follows an order
 
-- **Watch starts at "shipped".** From then on the order is checked whenever something happens (a carrier scan, a buyer message, a seller action) **and** whenever time alone creates risk: 48h without tracking on PayPal, 72h without a carrier scan, and 24h after delivery. Each check stores when the next threshold is crossed (`next_check_at`), so the scheduler only touches orders that are due.
+- **Watch starts at "shipped".** From then on the order is checked whenever something happens (a carrier scan, a buyer message, a seller action) **and** whenever the AI asked to look again. Each check is a full AI investigation that ends with the AI choosing its next check time and saying why (for example "just after the carrier's expected delivery on Thursday"). That time is stored as `next_check_at`, so the scheduler only touches orders that are due.
+- **Safety rails, not rules:** code never lets more than 24h pass between checks, caps refunds at 25%, fills every PayPal parameter itself, and only closes an order when the AI says it's safe **and** PayPal confirms the tracking **and** the buyer has had a day since delivery to report a problem.
 - **Scheduler, with no secrets and no setup:** `/api/watch/tick` is public but throttled in the database (one sweep per 5 minutes, only due orders), so calling it often costs nothing. It runs daily via Vercel Cron, every time the app is opened, and optionally every 15 minutes via GitHub Actions (`.github/workflows/watch.yml`). Sellers never deal with any of this.
-- **Protected** means delivered, no open risk after a quiet day, and tracking **read back from PayPal** (`GET /v2/checkout/orders/{id}` shows the tracker on the transaction). That proof is what wins an INR dispute.
+- **Protected** means the AI judged the order safe: delivered, no open risk after a quiet day, and tracking **read back from PayPal** (`GET /v2/checkout/orders/{id}` shows the tracker on the transaction). That proof is what wins an INR dispute.
 - **Audit trail:** every payment, scan, message, AI check (with its reason), flag and PayPal response is written to `order_timeline`. `/api/report` sums it up: orders watched, checks run, risks caught, PayPal confirmations, and the % of shipped orders with proof on PayPal.
 - **Limit:** in the sandbox this proves the mechanism (every order followed, every risk caught, every fix confirmed by PayPal). Measuring real dispute reduction needs live sellers.
 
@@ -165,9 +168,8 @@ PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREAT
 ## AI
 
 - **Model:** `openai/gpt-oss-120b` on Groq (free tier), with `qwen/qwen3.8-27b` as automatic fallback. Any OpenAI-compatible API works via `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY`.
-- **Assess:** order facts (hours since payment, carrier scans, whether tracking is on PayPal, buyer messages) go in, and the model returns a risk level, signal, reason and the facts it used, validated against a JSON schema.
-- **Investigate (agent with tools):** before anyone contacts the buyer, the model investigates by calling tools itself: carrier tracking (scans, exceptions, expected delivery, proof of delivery with GPS distance), carrier facility alerts, the **live PayPal order** (buyer's shipping address and trackers on the transaction), buyer messages, and the seller's policy. It reports findings with every fact tagged by source (carrier / PayPal / buyer). The full tool-call trace is stored (`investigations`). In the sandbox the carrier tools read a simulator; in production they'd call a carrier or tracking API.
-- **Recommend:** for each flagged order the model picks one fix (`attach_tracking`, `message_buyer` or `partial_refund`) and writes the words. The backend fills every PayPal parameter from real order data and enforces limits: only the order's own tracking number, refunds capped at 25%, messages that lead with what Forestall found and give the buyer a concrete resolution today (for example a same-day replacement or a refund, buyer's choice), never "I'll get back to you".
+- **Every check is an investigation (agent with tools).** The model gets the order's facts and decides which tools to call: carrier tracking (scans, exceptions, expected delivery, proof of delivery with GPS distance), carrier facility alerts, the **live PayPal order** (buyer's shipping address and trackers on the transaction), buyer messages, and the seller's policy. It returns its reasoning steps (what it checked, what it learned), a risk level and reason, every fact tagged by source (carrier / PayPal / buyer), the buyer's tone and needs, its next check time with a reason, and whether to close the order. The full tool-call trace is stored (`investigations`) and shown on the order page as **AI investigation**. In the sandbox the carrier tools read a simulator; in production they'd call a carrier or tracking API.
+- **Recommend:** for each flagged order the model picks one fix, including whether to attach tracking, (`attach_tracking`, `message_buyer` or `partial_refund`) and writes the words. The backend fills every PayPal parameter from real order data and enforces limits: only the order's own tracking number, refunds capped at 25%, messages that lead with what Forestall found and give the buyer a concrete resolution today (for example a same-day replacement or a refund, buyer's choice), never "I'll get back to you".
 - Every assessment is stored with its input and model (`assessments` table): an audit trail and a cache, so unchanged orders don't spend another AI call.
 - The AI never calls PayPal. It only proposes; the backend acts after the seller approves.
 
@@ -193,7 +195,7 @@ Local frontend: `cd frontend && npm install && VITE_API_URL=http://localhost:800
 - [x] 2. PayPal sandbox auth + test order (PayPal checkout, or one-tap test-card order)
 - [x] 3. PayPal webhooks (verified with PayPal): captures arrive automatically
 - [x] 4. Delivery simulator + watcher (scripted stories over simulated days; scheduled sweep)
-- [x] 5. AI assess (Groq `openai/gpt-oss-120b`, Qwen fallback)
+- [x] 5. AI check on every watch: tool-using agent decides risk, next check and closing (Groq `openai/gpt-oss-120b`, Qwen fallback)
 - [x] 6. AI recommend (one fix per flag; PayPal parameters filled and validated by the backend)
 - [x] 7. Approve / edit / dismiss; execute on PayPal; buyer reply -> follow-up fix
 - [x] 8. AG Grid risk queue (ranked by risk, filter chips, quick search, column filters, inline Approve)

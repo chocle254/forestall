@@ -1,4 +1,4 @@
-"""AI job 2 of 4: investigate a flagged order with tools, then report findings.
+"""The investigating agent's tools and what it reports (see risk.py, which runs it on every check).
 
 The agent decides which tools to call. Carrier tools read the simulated carrier
 (the sandbox has none); the PayPal tool is a live PayPal API call.
@@ -28,7 +28,7 @@ SELLER_POLICY = {
 
 
 class Evidence(BaseModel):
-    source: Literal["carrier", "paypal", "buyer", "forestall"]
+    source: Literal["carrier", "paypal", "buyer", "seller_policy", "forestall"]
     fact: str
 
 
@@ -44,20 +44,6 @@ class Findings(BaseModel):
         description="Concrete things the seller can offer the buyer TODAY under the seller policy.")
     confidence: Literal["low", "medium", "high"]
 
-
-SYSTEM = """You are Forestall's investigator. A PayPal order has been flagged as at risk of an "item not received"
-dispute. Before anyone contacts the buyer, find out what actually happened, using the tools.
-
-How to investigate:
-- Always check the carrier tracking and the PayPal order.
-- If the parcel is stuck at a facility, check that facility's service alerts.
-- If the carrier says delivered, compare the proof of delivery (GPS distance, photo) with the shipping address
-  on the PayPal order. More than about 100 m away, or a photo that doesn't match the address, suggests
-  misdelivery.
-- Read the buyer's messages for needs or deadlines.
-- Read the seller policy and list only resolution options it allows, concrete enough to offer today.
-
-Report facts only from tool results, each tagged with its source. Never invent."""
 
 TOOLS = [
     {"type": "function", "function": {
@@ -83,14 +69,9 @@ TOOLS = [
 ]
 
 
-async def investigate(order_id: str) -> dict:
-    pool = await db.get_pool()
-    assert pool
-    order = await pool.fetchrow("select * from orders where id=$1", order_id)
-    if not order:
-        raise LookupError("order not found")
-    flag = await pool.fetchrow("select * from flags where order_id=$1 and not resolved", order_id)
-    now = datetime.now(timezone.utc) + timedelta(hours=order["demo_shift_hours"])
+def tool_handlers(order, pool, now: datetime) -> dict:
+    """The agent's tools for one order. Carrier tools read EasyPost or the simulator; PayPal is a live call."""
+    order_id = order["id"]
 
     async def get_carrier_tracking():
         if order["carrier_source"] == "easypost" and order["easypost_tracker_id"]:
@@ -126,20 +107,17 @@ async def investigate(order_id: str) -> dict:
     async def get_seller_policy():
         return SELLER_POLICY
 
-    handlers = {f.__name__: f for f in (get_carrier_tracking, get_carrier_facility_status, get_paypal_order,
-                                        get_buyer_messages, get_seller_policy)}
-    brief = {
-        "flag": {"risk_level": flag["risk_level"], "signal": flag["signal"], "reason": flag["reason"]} if flag else None,
-        "buyer_name": order["buyer_name"],
-        "order_value": f"{order['amount']} {order['currency']}",
-        "now": now.isoformat(),
-    }
-    findings, trace = await ai.run_agent(SYSTEM, "Investigate this flagged order:\n" + json.dumps(brief, default=str),
-                                         TOOLS, handlers, Findings)
-    row = await pool.fetchrow(
-        "insert into investigations (order_id, flag_id, findings, tool_calls, model) values ($1,$2,$3,$4,$5) returning *",
-        order_id, flag["id"] if flag else None, json.dumps(findings.model_dump()), json.dumps(trace, default=str),
-        ai.last_model_used or ai.model_name())
+    return {f.__name__: f for f in (get_carrier_tracking, get_carrier_facility_status, get_paypal_order,
+                                    get_buyer_messages, get_seller_policy)}
+
+
+async def investigate(order_id: str) -> dict:
+    """Run a fresh AI check (the agent investigates with tools) and return the investigation it stored."""
+    from . import risk  # risk runs the agent; imported here to avoid a cycle
+    await risk.assess(order_id, force=True)
+    pool = await db.get_pool()
+    assert pool
+    row = await pool.fetchrow("select * from investigations where order_id=$1 order by created_at desc limit 1", order_id)
     return out(row)
 
 

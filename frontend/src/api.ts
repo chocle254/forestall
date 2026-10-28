@@ -51,6 +51,27 @@ export type Order = {
   store_order_id: string | null;
   findings: Findings | null;
   tools_used: string[];
+  action_model: string | null;
+  ai_check: AiCheck | null;
+  ai_model: string | null;
+  ai_checked_at: string | null;
+};
+
+export type AiStep = { source: string; checked: string; learned: string };
+
+/** The AI's latest check of an order: its investigation steps and decisions. */
+export type AiCheck = {
+  steps?: AiStep[];
+  risk_level: string;
+  signal: string;
+  reason: string;
+  summary?: string;
+  buyer_mood?: string;
+  confidence?: string;
+  next_check_in_hours?: number;
+  next_check_reason?: string;
+  safe_to_close?: boolean;
+  tools_used?: string[];
 };
 
 export type Findings = {

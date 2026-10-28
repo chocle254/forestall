@@ -1,4 +1,4 @@
-"""AI job 3 of 4: recommend ONE fix for a flagged order, based on the investigation.
+"""Recommend ONE fix for a flagged order, based on the AI check's investigation.
 
 The model picks the action and writes the words; the backend fills in every
 PayPal parameter from real order data and enforces limits, so the model can't
@@ -150,23 +150,8 @@ async def recommend(order_id: str, force: bool = False) -> dict | None:
 
     order = await pool.fetchrow("select * from orders where id=$1", order_id)
 
-    # Rule, not AI: tracking the seller has but PayPal doesn't is always fixed by attaching it.
-    if order["tracking_number"] and not order["tracking_attached_at"]:
-        params = _build_params(Recommendation(type="attach_tracking", justification=""), order)
-        params["paypal_call"] = _paypal_call("attach_tracking", order)
-        why = (f"{order['carrier'] or 'USPS'} tracking {order['tracking_number']} exists but isn't on the PayPal "
-               "transaction. Attaching it gives you proof for any dispute, and PayPal emails the buyer the tracking.")
-        async with pool.acquire() as conn, conn.transaction():
-            await conn.execute(
-                "update actions set status='superseded', updated_at=now() where flag_id=$1 and status='proposed'", flag["id"])
-            row = await conn.fetchrow(
-                """insert into actions (flag_id, order_id, type, params, justification, status, model)
-                   values ($1,$2,'attach_tracking',$3,$4,'proposed','rule') returning *""",
-                flag["id"], order_id, json.dumps(params), why)
-        return _out(row)
-
     context = await risk.build_context(order_id)
-    # Investigate first (or reuse this flag's investigation if nothing changed since).
+    # The AI check that raised this flag already investigated; reuse it unless the risk changed since.
     inv = await investigate.latest_for_flag(order_id, flag["id"])
     if not inv or force or inv["created_at"] < flag["updated_at"]:
         inv = await investigate.investigate(order_id)

@@ -14,12 +14,12 @@ function parseChoice(v: string): ShipChoice {
 }
 
 const KIND_ICON: Record<string, string> = {
-  paid: "card", shipped: "box", scan: "truck", delivered: "pin", buyer_message: "chat", check: "search",
+  paid: "card", shipped: "box", scan: "truck", delivered: "pin", buyer_message: "chat", check: "sparkle",
   flag: "alert", flag_cleared: "check", paypal: "shield", action: "hand", protected: "shield", investigation: "sparkle",
   email: "mail", store: "store", webhook: "bolt",
 };
 const KIND_TONE: Record<string, string> = {
-  flag: "danger", flag_cleared: "ok", paypal: "ok", protected: "ok", investigation: "ai", action: "accent", buyer_message: "warn",
+  flag: "danger", flag_cleared: "ok", paypal: "ok", protected: "ok", investigation: "ai", check: "ai", action: "accent", buyer_message: "warn",
   email: "accent", store: "accent",
 };
 
@@ -57,8 +57,11 @@ function Timeline({ id, version }: { id: string; version: number }) {
             {typeof t.detail.reason === "string" && <div className="small muted">{t.detail.reason}</div>}
             {typeof t.detail.text === "string" && <blockquote className="small">“{t.detail.text}”</blockquote>}
             {t.kind === "paypal" && <div className="small muted">PayPal's response is stored as proof.</div>}
-            {t.kind === "investigation" && typeof t.detail.summary === "string" && <div className="small">{t.detail.summary}</div>}
-            {t.kind === "investigation" && Array.isArray(t.detail.tools_used) && (
+            {(t.kind === "investigation" || t.kind === "check") && typeof t.detail.summary === "string" && <div className="small">{t.detail.summary}</div>}
+            {t.kind === "check" && typeof t.detail.next_check_reason === "string" && (
+              <div className="small muted">Next look: {t.detail.next_check_reason}</div>
+            )}
+            {(t.kind === "investigation" || t.kind === "check") && Array.isArray(t.detail.tools_used) && t.detail.tools_used.length > 0 && (
               <div className="small muted">Checked: {(t.detail.tools_used as string[]).map((x) => TOOL_LABEL[x] ?? x).join(", ")}</div>
             )}
             {t.kind === "protected" && Array.isArray(t.detail.trackers_on_paypal) && (
@@ -71,22 +74,62 @@ function Timeline({ id, version }: { id: string; version: number }) {
   );
 }
 
-function Findings({ o }: { o: Order }) {
+const MOOD_LABEL: Record<string, string> = {
+  calm: "calm", curious: "curious", worried: "worried", frustrated: "frustrated", angry: "angry",
+};
+
+const SOURCE_LABEL: Record<string, string> = {
+  carrier: "carrier", paypal: "paypal", buyer: "buyer", seller_policy: "policy", forestall: "forestall",
+};
+
+/** The AI's latest investigation: what it checked, what it learned, what it decided, and why. */
+function AiInvestigation({ o }: { o: Order }) {
+  const c = o.ai_check;
   const f = o.findings;
-  if (!f) return null;
-  const tools = Array.from(new Set(o.tools_used)).map((t) => TOOL_LABEL[t] ?? t);
+  if (!c || !c.steps?.length) return null;
+  const tools = Array.from(new Set(c.tools_used ?? [])).map((t) => TOOL_LABEL[t] ?? t);
   return (
     <section className="panel tone-ai">
       <div className="panel-head">
-        <span className="panel-title"><Icon name="sparkle" />What Forestall found</span>
+        <span className="panel-title"><Icon name="sparkle" />AI investigation</span>
+        <span className="tag">{o.ai_model ?? "AI"}{o.ai_checked_at ? ` · ${when(o.ai_checked_at)}` : ""}</span>
+      </div>
+      {c.summary && <p>{c.summary}</p>}
+      <ol className="ai-steps">
+        {c.steps.map((st, i) => (
+          <li key={i}>
+            <span className={`src src-${st.source}`}>{SOURCE_LABEL[st.source] ?? st.source}</span>
+            <div><b>{st.checked}</b><div className="small">{st.learned}</div></div>
+          </li>
+        ))}
+      </ol>
+      <div className="ai-decision">
+        <div><span className="small muted">Decision</span><b className={`risk-${c.risk_level}`}>{c.risk_level} risk</b>
+          {c.signal && c.signal !== "none" && <span className="small"> · {SIGNAL_LABEL[c.signal] ?? c.signal}</span>}</div>
+        {c.buyer_mood && MOOD_LABEL[c.buyer_mood] && <div><span className="small muted">Buyer's tone</span><b>{MOOD_LABEL[c.buyer_mood]}</b></div>}
+        {c.confidence && <div><span className="small muted">Confidence</span><b>{c.confidence}</b></div>}
+      </div>
+      {f?.buyer_need && <p className="small"><b>What the buyer needs:</b> {f.buyer_need}</p>}
+      {o.watch_status === "watching" && c.next_check_reason && (
+        <p className="small"><b>Next look{c.next_check_in_hours ? ` in ${c.next_check_in_hours}h` : ""}:</b> {c.next_check_reason}</p>
+      )}
+      {tools.length > 0 && <p className="small muted">Tools the AI chose to call: {tools.join(" · ")}</p>}
+    </section>
+  );
+}
+
+function Findings({ o }: { o: Order }) {
+  const f = o.findings;
+  if (!f || !f.evidence?.length) return null;
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <span className="panel-title"><Icon name="search" />Evidence the AI found</span>
         <span className="tag">{f.confidence} confidence</span>
       </div>
-      <p>{f.summary}</p>
       <ul className="facts">
         {f.evidence.map((e, i) => <li key={i}><span className={`src src-${e.source}`}>{e.source}</span>{e.fact}</li>)}
       </ul>
-      {f.buyer_need && <p className="small"><b>What the buyer needs:</b> {f.buyer_need}</p>}
-      {tools.length > 0 && <p className="small muted">Sources checked: {tools.join(" · ")}</p>}
     </section>
   );
 }
@@ -116,6 +159,7 @@ function FixDetails({ o, emailOn }: { o: Order; emailOn: boolean }) {
         </>
       )}
       {o.action_justification && <p className="small"><b>Why this fix:</b> {o.action_justification}</p>}
+      {o.action_model && o.action_model !== "rule" && <p className="small muted"><Icon name="sparkle" size={12} /> Fix chosen and written by AI ({o.action_model}). The backend checked every PayPal parameter.</p>}
       <p className="small muted">PayPal call: <code>{String(p.paypal_call)}</code></p>
     </div>
   );
@@ -381,17 +425,18 @@ export default function OrderDetail({ o, scenarios, epCodes, emailOn, onChange }
             <section className="panel tone-danger">
               <div className="panel-head">
                 <span className="panel-title"><Icon name="alert" />{SIGNAL_LABEL[o.signal ?? ""] ?? o.signal}</span>
-                <span className="tag">Flagged by AI</span>
+                <span className="tag">Flagged by AI{o.ai_model ? ` · ${o.ai_model}` : ""}</span>
               </div>
               <p className="lead">{o.flag_reason}</p>
             </section>
           )}
+          <AiInvestigation o={o} />
           <Findings o={o} />
           <ActionPanel o={o} emailOn={emailOn} onChange={refresh} />
           {!o.flag_reason && !o.action_type && o.watch_status === "watching" && (
             <section className="panel tone-ok">
               <div className="panel-head"><span className="panel-title"><Icon name="check" />On track</span></div>
-              <p>No warning signs. Forestall checks again automatically.</p>
+              <p>{o.ai_check?.reason ?? "No warning signs."} The AI looks again {o.next_check_at ? when(o.next_check_at) : "soon"}.</p>
             </section>
           )}
           <SandboxControls o={o} scenarios={scenarios} epCodes={epCodes} onDone={refresh} />
