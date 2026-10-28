@@ -6,6 +6,14 @@ Forestall watches a seller's PayPal orders after payment is captured. When a shi
 
 Built for the Devpost PayPal AI Hackathon (2026).
 
+**Live demo:** https://forestall-gamma.vercel.app (PayPal sandbox, no login needed; see [Try it](#try-it-judges)).
+
+### Built with
+
+- **PayPal APIs (sandbox):** Orders v2 (checkout, capture, read, add tracking), Payments v2 (refunds), Disputes v1 (read + provide evidence), Webhooks (`PAYMENT.CAPTURE.COMPLETED`, `CUSTOMER.DISPUTE.CREATED`, signature-verified).
+- **AI:** `openai/gpt-oss-120b` on Groq with a Qwen fallback, through any OpenAI-compatible API. It does risk assessment, runs a tool-calling investigation agent and recommends fixes, and it drafts dispute evidence.
+- FastAPI (Python), React + Vite, AG Grid, Neon Postgres, EasyPost (carrier tracking, test mode), Vercel.
+
 ---
 
 ## The problem
@@ -173,10 +181,10 @@ PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREAT
 
 1. Import this repo into Vercel at the repo root. `vercel.json` defines both services.
 2. In the project's **Storage** tab, add a **Neon** Postgres database. That sets `DATABASE_URL`, and the backend creates its tables on first request.
-3. Add the PayPal sandbox variables from `backend/.env.example`.
+3. Add the variables from `backend/.env.example`: PayPal sandbox app credentials (developer.paypal.com), an AI key (`AI_API_KEY`, a free Groq key works) and an EasyPost test key. SMTP is optional.
 4. Open the deployment: the status card should show API, Database and PayPal as connected.
 
-Local backend: `cd backend && pip install -r requirements.txt && uvicorn app.main:app --reload`
+Local backend: `cd backend && cp .env.example .env` (fill it in), then `pip install -r requirements.txt && uvicorn app.main:app --reload`
 Local frontend: `cd frontend && npm install && VITE_API_URL=http://localhost:8000 npm run dev`
 
 ## Status
