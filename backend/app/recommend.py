@@ -103,6 +103,10 @@ def check_offers(rec: Recommendation, allowed: set[str]) -> None:
 
 def _build_params(rec: Recommendation, order) -> dict:
     """Turn the model's choice into exact, validated parameters. Raises ValueError if impossible."""
+    if rec.type != "attach_tracking" and order["tracking_number"] and not order["tracking_attached_at"]:
+        # Safety rail: without tracking on PayPal the seller has no proof, whatever else happens.
+        raise ValueError("the seller's tracking number is not on the PayPal transaction yet; attach_tracking must "
+                         "come first (PayPal also emails the buyer the tracking)")
     if rec.type == "attach_tracking":
         if not order["tracking_number"]:
             raise ValueError("attach_tracking needs a tracking number, and this order has none")
