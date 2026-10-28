@@ -220,9 +220,11 @@ async def check(order_id: str, trigger: str = "scheduled") -> dict:
         a = await risk.assess(order_id)
     except ai.AIUnavailable as e:
         async with pool.acquire() as conn:
-            await log(conn, order_id, "check", "Check postponed: AI unavailable", {"error": str(e), "trigger": trigger}, _now(o))
-            await conn.execute("update orders set next_check_at = now() + interval '15 minutes' where id=$1", order_id)
-        return {"order_id": str(order_id), "error": str(e)}
+            await log(conn, order_id, "check", "Check postponed: AI busy" if e.busy else "Check postponed: AI unavailable",
+                      {"error": str(e), "trigger": trigger}, _now(o))
+            await conn.execute("update orders set next_check_at = now() + interval '5 minutes' where id=$1", order_id)
+        return {"order_id": str(order_id), "error": "The AI is busy with other orders right now." if e.busy else str(e),
+                "busy": e.busy, "retry_in_s": 10}
 
     async with pool.acquire() as conn:
         o = await conn.fetchrow("select * from orders where id=$1", order_id)
@@ -270,9 +272,13 @@ async def check(order_id: str, trigger: str = "scheduled") -> dict:
             if ev and ev > now:
                 nxt = min(nxt, ev)
         wall = nxt - timedelta(hours=o["demo_shift_hours"]) + timedelta(minutes=1)
+        if proposal and proposal.get("pending"):  # the fix still needs writing: come back soon
+            wall = min(wall, datetime.now(timezone.utc) + timedelta(minutes=5))
         await conn.execute("update orders set next_check_at=$2 where id=$1", order_id, wall)
-    return {**_summary(a), "watch_status": "watching", "proposal": proposal,
-            "next_check_in_hours": round((nxt - now).total_seconds() / 3600, 1)}
+    busy = bool(proposal and proposal.get("pending"))
+    return {**_summary(a), "watch_status": "watching", "proposal": None if busy else proposal,
+            "next_check_in_hours": round((nxt - now).total_seconds() / 3600, 1),
+            **({"busy": True, "retry_in_s": 10, "error": "Risk found; the AI is busy writing the fix."} if busy else {})}
 
 
 ACTION_TITLE = {
@@ -292,7 +298,9 @@ async def _propose(order_id: str, now: datetime) -> dict | None:
     except (ai.AIUnavailable, ValueError) as e:
         async with pool.acquire() as conn:
             await log(conn, order_id, "action", "Fix not proposed yet", {"error": str(e)}, now)
-        return None
+            if isinstance(e, ai.AIUnavailable):
+                await conn.execute("update orders set next_check_at = now() + interval '5 minutes' where id=$1", order_id)
+        return {"pending": True} if isinstance(e, ai.AIUnavailable) and e.busy else None
     if p and str(before) != p["id"]:
         async with pool.acquire() as conn:
             await log(conn, order_id, "action", ACTION_TITLE[p["type"]],
@@ -381,7 +389,10 @@ async def sweep(limit: int = 20) -> dict:
         nxt = await pool.fetchval("select last_run_at + $1::interval from sweep_state where id = 1", SWEEP_EVERY)
         return {"ran": False, "reason": "a sweep ran recently", "next_sweep_after": nxt}
     due = await pool.fetch(
-        "select id from orders where watch_status='watching' and (next_check_at is null or next_check_at <= now())"
+        # Simulated demo orders move only when someone presses "Advance", so the background sweep skips them
+        # (they would otherwise spend the AI budget judges need).
+        "select id from orders where watch_status='watching' and demo_scenario is null"
+        " and (next_check_at is null or next_check_at <= now())"
         " order by next_check_at nulls first limit $1", limit)
     results = []
     for r in due:

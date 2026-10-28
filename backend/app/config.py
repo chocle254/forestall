@@ -19,7 +19,9 @@ class Settings(BaseSettings):
     ai_api_key: str = ""
     ai_base_url: str = "https://api.groq.com/openai/v1"
     ai_model: str = "openai/gpt-oss-120b"
-    # Tried once if the main model is retired, overloaded or rate limited.
+    # Used in order when the main model is rate limited, overloaded or retired. Each model has its own
+    # rate limit, so a chain multiplies what a free plan can handle. Comma-separated.
+    ai_extra_models: str = "openai/gpt-oss-20b"
     ai_fallback_model: str = "qwen/qwen3.8-27b"
 
     # EasyPost (carrier tracking). Test keys start with EZTK.

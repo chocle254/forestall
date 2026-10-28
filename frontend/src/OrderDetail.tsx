@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   advanceOrder, approveAction, buyerReply, checkOrder, dismissAction, editAction, getTimeline, shipOrder,
-  type Order, type Scenario, type ShipChoice, type TimelineItem,
+  type CheckResult, type Order, type Scenario, type ShipChoice, type TimelineItem,
 } from "./api";
 import { Empty, FIX_TITLE, Icon, SIGNAL_LABEL, StatusBadge, go, money, when } from "./ui";
 
@@ -311,12 +311,22 @@ function SandboxControls({ o, scenarios, epCodes, onDone }: {
   const [note, setNote] = useState<string | null>(null);
   if (o.watch_status !== "not_shipped" && o.watch_status !== "watching") return null;
 
-  const act = async (label: string, fn: () => Promise<{ error?: string; watch_status?: string }>) => {
+  const act = async (label: string, fn: () => Promise<CheckResult>) => {
     setBusy(label);
     setNote(null);
     try {
-      const r = await fn();
-      if (r.error) setNote(r.error);
+      let r = await fn();
+      // The AI is shared by everyone trying the demo; when it's rate limited, wait and check again.
+      for (let attempt = 1; r.busy && attempt <= 6; attempt++) {
+        const wait = Math.max(5, r.retry_in_s ?? 10);
+        setNote(`The AI is busy with other orders. Trying again in ${wait} seconds (attempt ${attempt} of 6)…`);
+        onDone();
+        await new Promise((res) => setTimeout(res, wait * 1000));
+        setNote("AI is checking again…");
+        r = await checkOrder(o.id);
+      }
+      if (r.busy) setNote("The AI is still busy. Forestall will check this order again by itself in a few minutes.");
+      else if (r.error) setNote(r.error);
       else if (r.watch_status === "protected") setNote("Delivered with proof on PayPal. This order is now protected.");
       onDone();
     } catch (e) {

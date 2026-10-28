@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+import asyncio
+
 from . import ai, db, investigate
 
 Signal = Literal["no_tracking", "stalled", "buyer_concern", "delivered_not_received", "carrier_exception", "none"]
@@ -60,8 +62,8 @@ What you know about INR disputes:
   prevents most of them.
 
 How to investigate (call several tools at once when you can):
-- Always call get_carrier_tracking and get_paypal_order first, even if the brief seems to answer it: the brief
-  is Forestall's copy, the tools are the live sources. Is the tracking on the transaction? Where is the buyer?
+- Live carrier tracking and the live PayPal order are already in front of you (your first tool calls). Is the
+  tracking on the transaction? Where is the buyer? Does the carrier report a problem?
 - Judge delay against the carrier's own expected delivery date and the scan pattern, not a fixed number of
   days. If the parcel sits at a facility, call get_carrier_facility_status for it.
 - Tag each step with the source you actually got it from (the tool's source, not "forestall").
@@ -157,10 +159,19 @@ async def assess(order_id: str, force: bool = False) -> dict:
     else:
         order = await pool.fetchrow("select * from orders where id=$1", order_id)
         now = datetime.now(timezone.utc) + timedelta(hours=order["demo_shift_hours"])
-        brief = {"buyer_name": order["buyer_name"], "now": now.isoformat(), **context}
-        a, trace = await ai.run_agent(SYSTEM, "Check this order:\n" + json.dumps(brief, indent=2, default=str),
-                                      investigate.TOOLS, investigate.tool_handlers(order, pool, now), Assessment,
-                                      required_tools=("get_carrier_tracking", "get_paypal_order"))
+        # The carrier scans come back from the carrier tool, so the brief leaves them out (fewer tokens).
+        brief = {"buyer_name": order["buyer_name"], "now": now.isoformat(),
+                 **{k: v for k, v in context.items() if k != "carrier_scans"}}
+        handlers = investigate.tool_handlers(order, pool, now)
+        # Every investigation starts from the two live sources; read them in parallel for the agent.
+        preloaded = []
+        for name, res in zip(("get_carrier_tracking", "get_paypal_order"), await asyncio.gather(
+                handlers["get_carrier_tracking"](), handlers["get_paypal_order"](), return_exceptions=True)):
+            preloaded.append({"tool": name, "args": {},
+                              "result": {"error": f"{type(res).__name__}: {str(res)[:200]}"}
+                              if isinstance(res, BaseException) else res})
+        a, trace = await ai.run_agent(SYSTEM, "Check this order:\n" + json.dumps(brief, default=str),
+                                      investigate.TOOLS, handlers, Assessment, preloaded=preloaded)
         a.next_check_in_hours = max(1, min(24, a.next_check_in_hours))
         result = a.model_dump()
         result["tools_used"] = [t["tool"] for t in trace]

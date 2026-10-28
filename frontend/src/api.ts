@@ -100,6 +100,9 @@ export type CheckResult = {
   next_check_in_hours?: number;
   error?: string;
   skipped?: boolean;
+  /** The AI was rate limited: the order is fine, run the check again shortly. */
+  busy?: boolean;
+  retry_in_s?: number;
 };
 
 export type TimelineItem = {
