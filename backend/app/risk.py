@@ -175,6 +175,9 @@ async def assess(order_id: str, force: bool = False) -> dict:
         a, trace = await ai.run_agent(SYSTEM, "Check this order:\n" + json.dumps(brief, default=str),
                                       investigate.TOOLS, handlers, Assessment, preloaded=preloaded)
         a.next_check_in_hours = max(1, min(24, a.next_check_in_hours))
+        # Keep the label honest: "no tracking" can't apply once the tracking is on PayPal.
+        if a.signal == "no_tracking" and order["tracking_attached_at"]:
+            a.signal = "buyer_concern" if a.buyer_mood in ("worried", "frustrated", "angry") else "stalled"
         # Safety rail: shipped with tracking, but none on PayPal, is never "no risk" (the seller has no proof).
         if (a.risk_level == "low" and order["shipped_at"] and order["tracking_number"]
                 and not order["tracking_attached_at"]):
