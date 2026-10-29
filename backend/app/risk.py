@@ -78,6 +78,8 @@ Then decide:
   that the expected date can absorb), buyer_concern (the buyer is worried or has a need the delay threatens),
   delivered_not_received, carrier_exception (the carrier reports failure, return, loss or damage), or none.
 - risk_level: high = a dispute is likely without action now; medium = act soon; low = no action needed.
+  A shipped order whose tracking is NOT on the PayPal transaction is at least medium (signal no_tracking), even
+  if the parcel is moving fine: should the buyer dispute, the seller has no proof, and the fix takes one tap.
 - next_check_in_hours (1 to 24): when something could change, e.g. just after the expected delivery date, the
   next scan you'd expect, or a buyer's deadline. Look sooner when risk is high or a buyer is waiting.
 - safe_to_close: only when delivered, the tracking is on PayPal, and nothing points to a dispute. If delivery
@@ -173,6 +175,12 @@ async def assess(order_id: str, force: bool = False) -> dict:
         a, trace = await ai.run_agent(SYSTEM, "Check this order:\n" + json.dumps(brief, default=str),
                                       investigate.TOOLS, handlers, Assessment, preloaded=preloaded)
         a.next_check_in_hours = max(1, min(24, a.next_check_in_hours))
+        # Safety rail: shipped with tracking, but none on PayPal, is never "no risk" (the seller has no proof).
+        if (a.risk_level == "low" and order["shipped_at"] and order["tracking_number"]
+                and not order["tracking_attached_at"]):
+            a.risk_level, a.signal = "medium", "no_tracking"
+            a.reason = (a.reason.rstrip(". ") + ". But the tracking isn't on the PayPal transaction, so you'd have "
+                        "no proof if the buyer opened a dispute.")
         result = a.model_dump()
         result["tools_used"] = [t["tool"] for t in trace]
         model = ai.last_model_used or ai.model_name()
