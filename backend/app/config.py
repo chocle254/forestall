@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # rate limit, so a chain multiplies what a free plan can handle. Comma-separated.
     ai_extra_models: str = "openai/gpt-oss-20b"
     ai_fallback_model: str = "qwen/qwen3.8-27b"
+    # Backup provider (any OpenAI-compatible API), used when every main model is busy or out of quota.
+    # Example, Cerebras free tier: AI2_BASE_URL=https://api.cerebras.ai/v1, AI2_MODELS=gpt-oss-120b.
+    ai2_name: str = "Cerebras"
+    ai2_base_url: str = "https://api.cerebras.ai/v1"
+    ai2_api_key: str = ""
+    ai2_models: str = "gpt-oss-120b"
 
     # EasyPost (carrier tracking). Test keys start with EZTK.
     easypost_api_key: str = ""

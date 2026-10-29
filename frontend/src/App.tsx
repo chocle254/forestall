@@ -186,6 +186,7 @@ function SystemPage({ health, error, onRecheck }: { health: Health | null; error
     ["Database", health.database, "Orders, timeline and audit log"],
     ["PayPal", health.paypal, `Mode: ${health.paypal_env}`],
     ["AI", health.ai, health.ai_model],
+    ["AI backup", health.ai_backup ?? "not_configured", health.ai_backup === "ok" ? "Takes over when the main AI is busy" : "Not set up"],
     ["Carrier API", health.easypost, `EasyPost${health.easypost_mode ? ` (${health.easypost_mode} mode)` : ""}`],
     ["Buyer email", health.email, health.email === "ok" ? (health.email_redirect ? "SMTP · sandbox inbox" : "SMTP") : "SMTP not set up"],
   ] : [];

@@ -8,7 +8,8 @@ Built to keep working when several people use the demo at once on a rate-limited
 
 import asyncio
 import json
-from typing import TypeVar
+import time
+from typing import NamedTuple, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -41,14 +42,37 @@ def model_name() -> str:
     return settings.ai_model
 
 
-def models() -> list[str]:
-    """Main model first, then the fallbacks, without duplicates."""
-    chain = [settings.ai_model, *settings.ai_extra_models.split(","), settings.ai_fallback_model]
+class Route(NamedTuple):
+    label: str     # what the audit trail and the page show, e.g. "gpt-oss-120b · Cerebras"
+    base_url: str
+    key: str
+    model: str
+
+
+def _split(v: str) -> list[str]:
     out: list[str] = []
-    for m in (x.strip() for x in chain):
+    for m in (x.strip() for x in v.split(",")):
         if m and m not in out:
             out.append(m)
     return out
+
+
+def backup_configured() -> bool:
+    return bool(settings.ai2_api_key and settings.ai2_base_url and settings.ai2_models)
+
+
+def routes() -> list[Route]:
+    """Main provider's models first (main model, then fallbacks), then the backup provider's models."""
+    main = _split(",".join([settings.ai_model, settings.ai_extra_models, settings.ai_fallback_model]))
+    out = [Route(m, settings.ai_base_url, api_key(), m) for m in main]
+    if backup_configured():
+        out += [Route(f"{m} · {settings.ai2_name}", settings.ai2_base_url, settings.ai2_api_key, m)
+                for m in _split(settings.ai2_models)]
+    return out
+
+
+def models() -> list[str]:
+    return [r.label for r in routes()]
 
 
 def compact_schema(schema: type[BaseModel]) -> str:
@@ -69,42 +93,60 @@ def _retry_after(r: httpx.Response) -> float:
         return 4.0
 
 
-async def _send(body: dict) -> httpx.Response:
+# Routes that just said "rate limited", and until when (per server instance). Skipped while cooling down,
+# so a provider that's out of quota for the day doesn't cost a wasted request on every call.
+_cooling: dict[str, float] = {}
+
+
+async def _send(route: Route, body: dict) -> httpx.Response:
     async with httpx.AsyncClient(timeout=60) as client:
-        return await client.post(f"{settings.ai_base_url}/chat/completions",
-                                 headers={"Authorization": f"Bearer {api_key()}"}, json=body)
+        return await client.post(f"{route.base_url.rstrip('/')}/chat/completions",
+                                 headers={"Authorization": f"Bearer {route.key}"}, json=body)
 
 
-def _body(model: str, messages: list[dict], **extra) -> dict:
+def _body(model: str, messages: list[dict], reasoning: bool = True, **extra) -> dict:
     body: dict = {"model": model, "messages": messages, "temperature": 0.2, **extra}
-    if model.startswith("openai/gpt-oss"):
+    if reasoning and "gpt-oss" in model:
         body["reasoning_effort"] = "low"  # short answers; keeps us well inside free-tier token limits
     return body
 
 
 async def _post_chain(messages: list[dict], start: str | None = None, **extra) -> tuple[httpx.Response, str]:
-    """Send to the first model that isn't busy. Returns (response, model used).
+    """Send to the first route that isn't busy. Returns (response, route label).
 
-    Rate limited / overloaded / retired -> next model at once. All busy -> wait and go round again.
+    Rate limited / overloaded / retired -> next route at once. All busy -> wait and go round again.
     """
-    chain = models()
-    if start in chain:
-        chain = chain[chain.index(start):] + chain[:chain.index(start)]
+    chain = routes()
+    labels = [r.label for r in chain]
+    if start in labels:
+        i = labels.index(start)
+        chain = chain[i:] + chain[:i]
     waited, last = 0.0, None
     while True:
         wait = 15.0
-        for m in chain:
+        now = time.monotonic()
+        ready = [r for r in chain if _cooling.get(r.label, 0) <= now] or chain
+        for route in ready:
             try:
-                r = await _send(_body(m, messages, **extra))
+                r = await _send(route, _body(route.model, messages, **extra))
+                if r.status_code == 400 and "reasoning" in r.text.lower():
+                    r = await _send(route, _body(route.model, messages, reasoning=False, **extra))
             except httpx.HTTPError as e:
-                last = f"{m}: request failed ({type(e).__name__})"
+                last = f"{route.label}: request failed ({type(e).__name__})"
                 continue
-            if r.status_code == 429 or r.status_code >= 500 or r.status_code == 404:
-                last = f"{m} returned {r.status_code}"
-                if r.status_code == 429:
-                    wait = min(wait, _retry_after(r))
+            if r.status_code in (401, 403, 404) or r.status_code == 429 or r.status_code >= 500:
+                last = f"{route.label} returned {r.status_code}"
+                pause = _retry_after(r) if r.status_code == 429 else 60.0
+                # Out of quota for the day can mean a long retry-after: stay off this route that long.
+                try:
+                    cool = min(float(r.headers.get("retry-after", pause)), 3600.0)
+                except ValueError:
+                    cool = pause
+                _cooling[route.label] = time.monotonic() + max(pause, cool)
+                wait = min(wait, pause)
                 continue
-            return r, m
+            _cooling.pop(route.label, None)
+            return r, route.label
         if waited + wait > MAX_WAIT_S:
             raise AIUnavailable(f"AI is busy (all models rate limited): {last}", busy=True)
         await asyncio.sleep(wait)
@@ -144,15 +186,25 @@ async def chat_json(system: str, user: str, schema: type[T], attempts: int = 2) 
     raise AIUnavailable(f"AI kept returning invalid JSON: {last_error}")
 
 
-async def check() -> str:
-    if not configured():
-        return "not_configured"
+async def _models_ok(base_url: str, key: str) -> str:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(f"{settings.ai_base_url}/models", headers={"Authorization": f"Bearer {api_key()}"})
+            r = await client.get(f"{base_url.rstrip('/')}/models", headers={"Authorization": f"Bearer {key}"})
         return "ok" if r.status_code == 200 else f"error_{r.status_code}"
     except httpx.HTTPError:
         return "unreachable"
+
+
+async def check() -> str:
+    if not configured():
+        return "not_configured"
+    return await _models_ok(settings.ai_base_url, api_key())
+
+
+async def check_backup() -> str:
+    if not backup_configured():
+        return "not_configured"
+    return await _models_ok(settings.ai2_base_url, settings.ai2_api_key)
 
 
 async def list_models() -> list[str]:

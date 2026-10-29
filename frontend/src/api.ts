@@ -8,6 +8,7 @@ export type Health = {
   paypal_env: string;
   ai: string;
   ai_model: string;
+  ai_backup?: string;
   easypost: string;
   easypost_mode: string | null;
   email: string;

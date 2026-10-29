@@ -58,6 +58,8 @@ async def health():
         "paypal_env": "sandbox" if "sandbox" in settings.paypal_base_url else "live",
         "ai": await ai.check(),
         "ai_model": ai.model_name(),
+        "ai_backup": await ai.check_backup(),
+        "ai_routes": ai.models(),
         "easypost": await easypost.check(),
         "easypost_mode": "test" if easypost.test_mode() else ("live" if easypost.configured() else None),
         "email": emails.status(),
