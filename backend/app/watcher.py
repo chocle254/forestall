@@ -12,6 +12,7 @@ The AI can't close an order without that proof.
 Every step is written to `order_timeline`, which is the proof that the order was followed.
 """
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -161,8 +162,16 @@ async def attach_tracking(order_id: str, actor: str, notify_payer: bool = False)
     pool = await db.get_pool()
     assert pool
     o = await pool.fetchrow("select * from orders where id=$1", order_id)
-    result = await paypal.add_tracking(o["paypal_order_id"], o["capture_id"], o["tracking_number"],
-                                       o["carrier"] or "USPS", notify_payer=notify_payer)
+    # A capture made seconds ago can be briefly unknown to PayPal's tracking API; wait and retry.
+    for wait in (3, 6, 0):
+        try:
+            result = await paypal.add_tracking(o["paypal_order_id"], o["capture_id"], o["tracking_number"],
+                                               o["carrier"] or "USPS", notify_payer=notify_payer)
+            break
+        except paypal.PayPalError as e:
+            if not wait or "CAPTURE_ID_NOT_FOUND" not in json.dumps(e.body, default=str):
+                raise
+            await asyncio.sleep(wait)
     at = _now(o)
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("update orders set tracking_attached_at=$2, next_check_at=now() where id=$1", order_id, at)
