@@ -32,14 +32,6 @@ const RESOLUTION_LABEL: Record<string, string> = {
   replacement_shipped: "Replacement on its way",
 };
 
-const TOOL_LABEL: Record<string, string> = {
-  get_carrier_tracking: "Carrier tracking",
-  get_carrier_facility_status: "Facility alerts",
-  get_paypal_order: "PayPal order (live)",
-  get_buyer_messages: "Buyer messages",
-  get_seller_policy: "Seller policy",
-};
-
 function Timeline({ id, version }: { id: string; version: number }) {
   const [items, setItems] = useState<TimelineItem[] | null>(null);
   useEffect(() => {
@@ -61,9 +53,6 @@ function Timeline({ id, version }: { id: string; version: number }) {
             {t.kind === "check" && typeof t.detail.next_check_reason === "string" && (
               <div className="small muted">Next look: {t.detail.next_check_reason}</div>
             )}
-            {(t.kind === "investigation" || t.kind === "check") && Array.isArray(t.detail.tools_used) && t.detail.tools_used.length > 0 && (
-              <div className="small muted">Checked: {(t.detail.tools_used as string[]).map((x) => TOOL_LABEL[x] ?? x).join(", ")}</div>
-            )}
             {t.kind === "protected" && Array.isArray(t.detail.trackers_on_paypal) && (
               <div className="small muted">Read back from PayPal: {t.detail.trackers_on_paypal.length} tracker(s) on the transaction.</div>
             )}
@@ -82,54 +71,46 @@ const SOURCE_LABEL: Record<string, string> = {
   carrier: "carrier", paypal: "paypal", buyer: "buyer", seller_policy: "policy", forestall: "forestall",
 };
 
-/** The AI's latest investigation: what it checked, what it learned, what it decided, and why. */
-function AiInvestigation({ o }: { o: Order }) {
+/** One panel for everything the AI concluded: a headline, the verdict, and the steps folded away. */
+function AiSummary({ o }: { o: Order }) {
   const c = o.ai_check;
   const f = o.findings;
-  if (!c || !c.steps?.length) return null;
-  const tools = Array.from(new Set(c.tools_used ?? [])).map((t) => TOOL_LABEL[t] ?? t);
+  const headline = o.flag_reason ?? c?.summary ?? c?.reason;
+  if (!headline) return null;
+  const flagged = !!o.flag_reason;
+  const steps = c?.steps?.length
+    ? c.steps.map((st) => ({ source: st.source, text: `${st.checked}: ${st.learned}` }))
+    : (f?.evidence ?? []).map((e) => ({ source: e.source, text: e.fact }));
+  const confidence = c?.confidence ?? f?.confidence;
+  const verdict = [
+    c?.risk_level && `${c.risk_level} risk`,
+    confidence && `${confidence} confidence`,
+    c?.buyer_mood && MOOD_LABEL[c.buyer_mood] && `buyer ${MOOD_LABEL[c.buyer_mood]}`,
+  ].filter(Boolean).join(" · ");
   return (
-    <section className="panel tone-ai">
+    <section className={`panel ${flagged ? "tone-danger" : "tone-ok"}`}>
       <div className="panel-head">
-        <span className="panel-title"><Icon name="sparkle" />AI investigation</span>
-        <span className="tag">{o.ai_model ?? "AI"}{o.ai_checked_at ? ` · ${when(o.ai_checked_at)}` : ""}</span>
+        <span className="panel-title">
+          <Icon name={flagged ? "alert" : "check"} />
+          {flagged ? SIGNAL_LABEL[o.signal ?? ""] ?? o.signal : "On track"}
+        </span>
+        {o.ai_checked_at && <span className="tag">AI · {when(o.ai_checked_at)}</span>}
       </div>
-      {c.summary && <p>{c.summary}</p>}
-      <ol className="ai-steps">
-        {c.steps.map((st, i) => (
-          <li key={i}>
-            <span className={`src src-${st.source}`}>{SOURCE_LABEL[st.source] ?? st.source}</span>
-            <div><b>{st.checked}</b><div className="small">{st.learned}</div></div>
-          </li>
-        ))}
-      </ol>
-      <div className="ai-decision">
-        <div><span className="small muted">Decision</span><b className={`risk-${c.risk_level}`}>{c.risk_level} risk</b>
-          {c.signal && c.signal !== "none" && <span className="small"> · {SIGNAL_LABEL[c.signal] ?? c.signal}</span>}</div>
-        {c.buyer_mood && MOOD_LABEL[c.buyer_mood] && <div><span className="small muted">Buyer's tone</span><b>{MOOD_LABEL[c.buyer_mood]}</b></div>}
-        {c.confidence && <div><span className="small muted">Confidence</span><b>{c.confidence}</b></div>}
-      </div>
-      {f?.buyer_need && <p className="small"><b>What the buyer needs:</b> {f.buyer_need}</p>}
-      {o.watch_status === "watching" && c.next_check_reason && (
-        <p className="small"><b>Next look{c.next_check_in_hours ? ` in ${c.next_check_in_hours}h` : ""}:</b> {c.next_check_reason}</p>
+      <p className="lead">{headline}</p>
+      {verdict && <p className="small muted ai-verdict">{verdict}</p>}
+      {!flagged && o.watch_status === "watching" && o.next_check_at && (
+        <p className="small muted">Next check {when(o.next_check_at)}.</p>
       )}
-      {tools.length > 0 && <p className="small muted">Tools the AI chose to call: {tools.join(" · ")}</p>}
-    </section>
-  );
-}
-
-function Findings({ o }: { o: Order }) {
-  const f = o.findings;
-  if (!f || !f.evidence?.length) return null;
-  return (
-    <section className="panel">
-      <div className="panel-head">
-        <span className="panel-title"><Icon name="search" />Evidence the AI found</span>
-        <span className="tag">{f.confidence} confidence</span>
-      </div>
-      <ul className="facts">
-        {f.evidence.map((e, i) => <li key={i}><span className={`src src-${e.source}`}>{e.source}</span>{e.fact}</li>)}
-      </ul>
+      {steps.length > 0 && (
+        <details className="ai-details">
+          <summary className="small">Show how it decided ({steps.length} steps)</summary>
+          <ul className="facts">
+            {steps.map((st, i) => (
+              <li key={i}><span className={`src src-${st.source}`}>{SOURCE_LABEL[st.source] ?? st.source}</span>{st.text}</li>
+            ))}
+          </ul>
+        </details>
+      )}
     </section>
   );
 }
@@ -159,7 +140,6 @@ function FixDetails({ o, emailOn }: { o: Order; emailOn: boolean }) {
         </>
       )}
       {o.action_justification && <p className="small"><b>Why this fix:</b> {o.action_justification}</p>}
-      {o.action_model && o.action_model !== "rule" && <p className="small muted"><Icon name="sparkle" size={12} /> Fix chosen and written by AI ({o.action_model}). The backend checked every PayPal parameter.</p>}
       <p className="small muted">PayPal call: <code>{String(p.paypal_call)}</code></p>
     </div>
   );
@@ -431,24 +411,8 @@ export default function OrderDetail({ o, scenarios, epCodes, emailOn, onChange }
 
       <div className="detail-grid">
         <div className="stack">
-          {o.flag_reason && (
-            <section className="panel tone-danger">
-              <div className="panel-head">
-                <span className="panel-title"><Icon name="alert" />{SIGNAL_LABEL[o.signal ?? ""] ?? o.signal}</span>
-                <span className="tag">Flagged by AI{o.ai_model ? ` · ${o.ai_model}` : ""}</span>
-              </div>
-              <p className="lead">{o.flag_reason}</p>
-            </section>
-          )}
-          <AiInvestigation o={o} />
-          <Findings o={o} />
+          <AiSummary o={o} />
           <ActionPanel o={o} emailOn={emailOn} onChange={refresh} />
-          {!o.flag_reason && !o.action_type && o.watch_status === "watching" && (
-            <section className="panel tone-ok">
-              <div className="panel-head"><span className="panel-title"><Icon name="check" />On track</span></div>
-              <p>{o.ai_check?.reason ?? "No warning signs."} The AI looks again {o.next_check_at ? when(o.next_check_at) : "soon"}.</p>
-            </section>
-          )}
           <SandboxControls o={o} scenarios={scenarios} epCodes={epCodes} onDone={refresh} />
         </div>
         <section className="card">

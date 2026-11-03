@@ -395,3 +395,6 @@ textarea { resize: vertical; line-height: 1.5; }
 .chat li.buyer { justify-self: end; justify-items: end; }
 .bubble { padding: 10px 13px; border-radius: 14px; white-space: pre-wrap; background: var(--surface-2); border: 1px solid var(--border); }
 .chat li.buyer .bubble { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.ai-verdict { text-transform: capitalize; margin-top: -4px; }
+.ai-details summary { cursor: pointer; color: var(--muted); }
+.ai-details[open] summary { margin-bottom: 8px; }
