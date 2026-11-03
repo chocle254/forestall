@@ -101,12 +101,19 @@ def check_offers(rec: Recommendation, allowed: set[str]) -> None:
                          f"allowed: {sorted(allowed)}")
 
 
+def _tracking_rail(rec: Recommendation, order) -> Recommendation:
+    """Safety rail: without tracking on PayPal the seller has no proof, whatever else happens.
+    If the model picked another fix, attach the tracking first instead of proposing nothing."""
+    if rec.type == "attach_tracking" or not order["tracking_number"] or order["tracking_attached_at"]:
+        return rec
+    return Recommendation(
+        type="attach_tracking",
+        justification="The tracking number isn't on the PayPal transaction, so you'd have no proof of shipment "
+                      "if the buyer opened a dispute. Adding it also emails the buyer the tracking.")
+
+
 def _build_params(rec: Recommendation, order) -> dict:
     """Turn the model's choice into exact, validated parameters. Raises ValueError if impossible."""
-    if rec.type != "attach_tracking" and order["tracking_number"] and not order["tracking_attached_at"]:
-        # Safety rail: without tracking on PayPal the seller has no proof, whatever else happens.
-        raise ValueError("the seller's tracking number is not on the PayPal transaction yet; attach_tracking must "
-                         "come first (PayPal also emails the buyer the tracking)")
     if rec.type == "attach_tracking":
         if not order["tracking_number"]:
             raise ValueError("attach_tracking needs a tracking number, and this order has none")
@@ -171,7 +178,7 @@ async def recommend(order_id: str, force: bool = False) -> dict | None:
     }, indent=2, default=str)
     system = SYSTEM.replace("{max_share}", str(int(MAX_REFUND_SHARE * 100)))
 
-    rec = await ai.chat_json(system, "Recommend one fix for this flagged order:\n" + prompt, Recommendation)
+    rec = _tracking_rail(await ai.chat_json(system, "Recommend one fix for this flagged order:\n" + prompt, Recommendation), order)
     try:
         check_offers(rec, allowed)
         params = _build_params(rec, order)
@@ -179,6 +186,7 @@ async def recommend(order_id: str, force: bool = False) -> dict | None:
         # Tell the model what was wrong once, then accept only a valid answer.
         rec = await ai.chat_json(system, f"Recommend one fix for this flagged order:\n{prompt}\n\n"
                                  f"Your previous answer was not possible: {e}. Choose again.", Recommendation)
+        rec = _tracking_rail(rec, order)
         check_offers(rec, allowed)
         params = _build_params(rec, order)
     if rec.type == "message_buyer":
