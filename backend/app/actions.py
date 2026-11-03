@@ -5,6 +5,7 @@ buyer) by itself. Anything that moves money (refunds, replacements) waits for a 
 including follow-ups a buyer chose in reply to an offer.
 """
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -108,26 +109,31 @@ async def maybe_autopilot(proposal: dict | None) -> dict | None:
 
 
 async def approve_all() -> dict:
-    """One tap for everything waiting: approve each proposed fix on orders still being watched."""
+    """One tap for everything waiting: run each proposed fix on orders still being watched.
+    Fixes run a few at a time; the AI re-checks each order afterwards in the background (the watcher),
+    so a long queue clears in seconds instead of waiting on an AI call per order."""
     pool = await db.get_pool()
     assert pool
     rows = await pool.fetch(
         """select a.id from actions a join orders o on o.id = a.order_id
            where a.status='proposed' and o.watch_status='watching' order by a.created_at""")
-    done, failed = 0, 0
-    for r in rows:
-        try:
-            res = await approve(str(r["id"]))
-            done += res.get("status") == "executed"
-            failed += res.get("status") == "failed"
-        except (ValueError, LookupError, paypal.PayPalError, ai.AIUnavailable):
-            failed += 1
-    return {"approved": done, "failed": failed, "total": len(rows)}
+    gate = asyncio.Semaphore(3)
+
+    async def one(action_id: str) -> str:
+        async with gate:
+            try:
+                return (await approve(action_id, recheck=False)).get("status", "failed")
+            except (ValueError, LookupError, paypal.PayPalError, easypost.EasyPostError, ai.AIUnavailable):
+                return "failed"
+
+    results = await asyncio.gather(*(one(str(r["id"])) for r in rows))
+    return {"approved": results.count("executed"), "failed": len(results) - results.count("executed"),
+            "total": len(rows)}
 
 
 # --- Approve + execute --------------------------------------------------------
 
-async def approve(action_id: str, by: str = "seller") -> dict:
+async def approve(action_id: str, by: str = "seller", recheck: bool = True) -> dict:
     """Execute a fix the seller approved (or autopilot ran). PayPal fixes are real sandbox API calls."""
     pool, a, o, p = await _load(action_id)
     if a["status"] != "proposed":
@@ -156,7 +162,12 @@ async def approve(action_id: str, by: str = "seller") -> dict:
 
     # Let the watcher re-assess with the new facts (e.g. tracking now on PayPal clears the flag).
     status = await pool.fetchval("select watch_status from orders where id=$1", o["id"])
-    after = await watcher.check(o["id"], trigger="fix executed") if status == "watching" else {"watch_status": status}
+    if status == "watching" and not recheck:
+        # Bulk approve: let the background watcher re-check this order shortly.
+        await pool.execute("update orders set next_check_at=now() where id=$1", o["id"])
+        after = {"watch_status": status, "recheck": "queued"}
+    else:
+        after = await watcher.check(o["id"], trigger="fix executed") if status == "watching" else {"watch_status": status}
     return {"action_id": str(a["id"]), "status": "executed", "type": a["type"], "resolution": resolution,
             "result": result, "after": after, "by": by}
 

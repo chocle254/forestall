@@ -96,43 +96,65 @@ function Autopilot() {
   );
 }
 
-function AttentionList({ orders, onChange }: { orders: Order[]; onChange: () => void }) {
-  const items = orders.filter(needsAttention).slice(0, 5);
+/** One tap for the whole queue, with an inline check that shows what will run (and any refunds). */
+function ApproveAll({ orders, onChange }: { orders: Order[]; onChange: () => void }) {
   const waiting = orders.filter((o) => o.action_status === "proposed" && o.watch_status === "watching");
-  const refundTotal = waiting.reduce((t, o) =>
+  const refunds = waiting.reduce((t, o) =>
     t + (o.action_type === "partial_refund" ? Number(o.action_params?.amount ?? 0) : o.action_type === "full_refund" ? Number(o.amount) : 0), 0);
+  const replacements = waiting.filter((o) => o.action_type === "ship_replacement").length;
+  const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const all = async () => {
-    const money_ = refundTotal > 0 ? ` This includes ${money(refundTotal)} in refunds.` : "";
-    if (!window.confirm(`Approve all ${waiting.length} waiting fixes and run them on PayPal?${money_}`)) return;
+  const run = async () => {
     setBusy(true);
     setNote(null);
     try {
       const r = await approveAll();
-      setNote(`${r.approved} fix${r.approved === 1 ? "" : "es"} done${r.failed ? `, ${r.failed} failed (see the order timeline)` : ""}.`);
+      setNote(`Done: ${r.approved} of ${r.total} fixes ran on PayPal${r.failed ? `, ${r.failed} failed (see each order's timeline)` : ""}. The AI re-checks every order next.`);
       onChange();
     } catch (e) {
       setNote((e as Error).message);
     } finally {
       setBusy(false);
+      setAsking(false);
     }
   };
+  if (waiting.length < 2 && !note) return null;
+  const parts = [
+    refunds > 0 && `${money(refunds)} in refunds`,
+    replacements > 0 && `${replacements} replacement${replacements > 1 ? "s" : ""}`,
+  ].filter(Boolean).join(" and ");
+  return (
+    <div className="approve-all">
+      {waiting.length >= 2 && !asking && (
+        <button className="btn primary sm" onClick={() => setAsking(true)} disabled={busy}>
+          <Icon name="check" size={15} />Approve all {waiting.length}
+        </button>
+      )}
+      {asking && (
+        <div className="confirm-box">
+          <span>Run all <b>{waiting.length}</b> waiting fixes on PayPal?{parts && <> This includes <b>{parts}</b>.</>}</span>
+          <div className="actions">
+            <button className="btn primary sm" onClick={run} disabled={busy}>{busy ? "Running…" : `Run all ${waiting.length}`}</button>
+            <button className="btn ghost sm" onClick={() => setAsking(false)} disabled={busy}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {note && <p className="alert ok small">{note}</p>}
+    </div>
+  );
+}
+
+function AttentionList({ orders, onChange }: { orders: Order[]; onChange: () => void }) {
+  const items = orders.filter(needsAttention).slice(0, 5);
   return (
     <section className="card">
       <div className="card-head">
         <h2>Needs your attention</h2>
-        <div className="actions">
-          {waiting.length > 1 && (
-            <button className="btn primary sm" onClick={all} disabled={busy}>
-              <Icon name="check" size={15} />{busy ? "Approving…" : `Approve all ${waiting.length}`}
-            </button>
-          )}
-          <button className="btn ghost sm" onClick={() => go("orders")}>All orders<Icon name="chevron" size={15} /></button>
-        </div>
+        <button className="btn ghost sm" onClick={() => go("orders")}>All orders<Icon name="chevron" size={15} /></button>
       </div>
       <Autopilot />
-      {note && <p className="alert neutral small">{note}</p>}
+      <ApproveAll orders={orders} onChange={onChange} />
       {items.length === 0 ? (
         <Empty icon="shield" title="You're all caught up">Forestall is watching every shipped order.</Empty>
       ) : (
@@ -322,7 +344,8 @@ function SellerApp() {
   } else if (page === "orders") {
     body = (
       <>
-        <PageHead title="Orders" sub="Every PayPal order, ranked by risk. Approve a fix in the row, or open an order to see the full investigation." />
+        <PageHead title="Orders" sub="Every PayPal order, ranked by risk. Approve a fix in the row, approve them all at once, or open an order to see the full investigation." />
+        {orders && <ApproveAll orders={orders} onChange={refresh} />}
         <section className="card flush">
           {orders === null ? <div className="skeleton" style={{ height: 320 }} />
             : <RiskQueue orders={orders} onSelect={(id) => go(`orders/${id}`)} onChange={refresh} />}
