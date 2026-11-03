@@ -168,7 +168,8 @@ export function nextStep(o: Order): { title: string; sub: string } | null {
   }
   const sub =
     o.action_status === "proposed" ? (o.action_is_followup ? "Buyer chose, awaiting you" : "Awaiting your approval")
-      : o.action_status === "executed" ? (o.resolution === "awaiting_buyer_reply" ? "Sent, awaiting buyer" : "Done")
+      : o.action_status === "executed" ? (o.resolution === "awaiting_buyer_reply" ? "Sent, awaiting buyer"
+        : o.action_approved_by === "autopilot" ? "Done by autopilot" : "Done")
         : o.action_status === "dismissed" ? "Dismissed" : o.action_status === "failed" ? "PayPal rejected it" : String(o.action_status);
   return { title: FIX_SHORT[o.action_type] ?? o.action_type, sub };
 }

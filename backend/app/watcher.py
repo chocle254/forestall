@@ -247,6 +247,13 @@ async def check(order_id: str, trigger: str = "scheduled") -> dict:
     proposal = None
     if a["flag"]:
         proposal = await _propose(order_id, now)
+        # Autopilot: fixes that move no money run straight away. Not when this check follows a fix,
+        # so one tap (or one autopilot run) never chains into another.
+        if trigger != "fix executed":
+            from . import actions  # imported here: actions imports watcher
+            ran = await actions.maybe_autopilot(proposal)
+            if ran:
+                return {**(ran.get("after") or {}), "autopilot": {"type": ran["type"], "status": ran["status"]}}
 
     async with pool.acquire() as conn:
 

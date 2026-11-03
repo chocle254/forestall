@@ -2,7 +2,7 @@
 
 **An AI agent that stops "item not received" disputes before buyers file them.**
 
-Forestall watches a seller's PayPal orders after payment is captured. When a shipment looks like it's going wrong, it says why in plain words, proposes one fix, and runs that fix through PayPal as soon as the seller taps Approve. If a buyer opens a dispute anyway, Forestall drafts the evidence response from the order's full history.
+Forestall watches a seller's PayPal orders after payment is captured. When a shipment looks like it's going wrong, it says why in plain words, picks one fix and runs it through PayPal. Fixes that move no money (like attaching missing tracking) run on **autopilot**; refunds and replacements wait for one tap from the seller, and **Approve all** clears the whole queue at once. If a buyer opens a dispute anyway, Forestall drafts the evidence response from the order's full history.
 
 Built for the Devpost PayPal AI Hackathon (2026).
 
@@ -37,8 +37,9 @@ Each lost dispute costs the refund, the item, dispute fees, and account standing
                     AI recommends ONE fix
                     (attach tracking · message buyer · partial refund)
                            │
-                    Seller: Approve / Edit / Dismiss
-                           │  (nothing runs without approval)
+          Moves no money? ── yes ──► Autopilot runs it
+                           │ no (refund / replacement)
+                    Seller: Approve / Approve all / Edit / Dismiss
                            ▼
                     Backend calls the PayPal API ──► result shown
 
@@ -65,7 +66,7 @@ The model does three jobs, each returning structured JSON:
 2. **Recommend:** investigation → one fix the AI chooses and writes, with exact parameters the backend fills and checks.
 3. **Draft evidence:** full order timeline → dispute response text + attachments list.
 
-The model never calls PayPal or holds credentials. It writes a *proposed* action; only the backend executes it, and only after the seller approves.
+The model never calls PayPal or holds credentials. It writes a *proposed* action; only the backend executes it. Autopilot runs only fixes that move no money (attach tracking, an information-only email); anything that moves money waits for the seller's approval. The seller can switch autopilot off on the Overview.
 
 ## How it looks
 
@@ -115,7 +116,7 @@ One screen, built around a single workflow. It's a work queue, not a dashboard o
 
 | Failure mode | What Forestall does | Effect |
 |---|---|---|
-| Tracking never attached | Flags it within 48h and attaches it through the API on approval | The proof is on the transaction **before** any dispute |
+| Tracking never attached | Flags it and attaches it through the API on autopilot | The proof is on the transaction **before** any dispute |
 | Stalled parcel | Flags it when the carrier's expected date, scans and facility alerts say it's late | The seller reaches out first, so the buyer has less reason to dispute |
 | Anxious buyer | Spots concern in messages and drafts a reply | The question gets answered instead of escalating |
 | Dispute opens anyway | Drafts evidence from the stored timeline | A complete response in minutes, not hours of digging |
@@ -173,7 +174,7 @@ PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREAT
 - **Recommend:** for each flagged order the model picks one fix, including whether to attach tracking, (`attach_tracking`, `message_buyer` or `partial_refund`) and writes the words. The backend fills every PayPal parameter from real order data and enforces limits: only the order's own tracking number, refunds capped at 25%, messages that lead with what Forestall found and give the buyer a concrete resolution today (for example a same-day replacement or a refund, buyer's choice), never "I'll get back to you".
 - **Built for many judges at once on a free plan:** a chain of Groq models (`gpt-oss-120b` → `gpt-oss-20b` → Qwen), each with its own rate limit; when one is busy the next takes over at once. A second provider (`AI2_*`, e.g. Cerebras's free tier running the same `gpt-oss-120b`) takes over when all Groq models are busy or out of daily quota, and a provider that's out of quota is skipped until it recovers. If all are busy the page says so and retries by itself. Tested with four people running demo stories at once: every check completed.
 - Every assessment is stored with its input and model (`assessments` table): an audit trail and a cache, so unchanged orders don't spend another AI call.
-- The AI never calls PayPal. It only proposes; the backend acts after the seller approves.
+- The AI never calls PayPal. It only proposes; the backend acts, by itself for no-money fixes (autopilot) and after the seller approves for refunds and replacements.
 
 ## Store connection, buyer email and tracking page
 

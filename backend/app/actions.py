@@ -1,7 +1,8 @@
 """Slice 7: the seller approves, edits or dismisses a fix; Forestall executes it on PayPal.
 
-Nothing here runs without a seller tap. A buyer's reply to an offer only *proposes*
-the follow-up (refund or replacement); the seller approves that too.
+Autopilot runs fixes that move no money (attaching tracking, an information-only email to the
+buyer) by itself. Anything that moves money (refunds, replacements) waits for a seller tap,
+including follow-ups a buyer chose in reply to an offer.
 """
 
 import json
@@ -81,20 +82,65 @@ async def dismiss(action_id: str) -> dict:
     return recommend._out(row)
 
 
+# --- Autopilot ----------------------------------------------------------------
+
+async def autopilot_on() -> bool:
+    return (await db.get_setting("autopilot") or "on") == "on"
+
+
+def moves_no_money(kind: str, params: dict) -> bool:
+    """Fixes safe to run without the seller: no money moves and nothing is promised to the buyer."""
+    if kind == "attach_tracking":
+        return True
+    if kind == "message_buyer":
+        # Only an information-only update, and only when Forestall can send it itself (email).
+        return set(params.get("offers") or ["info_only"]) == {"info_only"} and emails.configured()
+    return False
+
+
+async def maybe_autopilot(proposal: dict | None) -> dict | None:
+    """Run a freshly proposed fix by itself when it moves no money and autopilot is on."""
+    if not proposal or proposal.get("status") != "proposed" or proposal.get("parent_action_id"):
+        return None
+    if not moves_no_money(proposal["type"], proposal.get("params") or {}) or not await autopilot_on():
+        return None
+    return await approve(proposal["id"], by="autopilot")
+
+
+async def approve_all() -> dict:
+    """One tap for everything waiting: approve each proposed fix on orders still being watched."""
+    pool = await db.get_pool()
+    assert pool
+    rows = await pool.fetch(
+        """select a.id from actions a join orders o on o.id = a.order_id
+           where a.status='proposed' and o.watch_status='watching' order by a.created_at""")
+    done, failed = 0, 0
+    for r in rows:
+        try:
+            res = await approve(str(r["id"]))
+            done += res.get("status") == "executed"
+            failed += res.get("status") == "failed"
+        except (ValueError, LookupError, paypal.PayPalError, ai.AIUnavailable):
+            failed += 1
+    return {"approved": done, "failed": failed, "total": len(rows)}
+
+
 # --- Approve + execute --------------------------------------------------------
 
-async def approve(action_id: str) -> dict:
-    """Seller approved: execute the fix. PayPal fixes are real sandbox API calls."""
+async def approve(action_id: str, by: str = "seller") -> dict:
+    """Execute a fix the seller approved (or autopilot ran). PayPal fixes are real sandbox API calls."""
     pool, a, o, p = await _load(action_id)
     if a["status"] != "proposed":
         raise ValueError(f"action is {a['status']}; only proposed fixes can be approved")
-    await pool.execute("update actions set status='approved', updated_at=now() where id=$1", a["id"])
+    await pool.execute("update actions set status='approved', approved_by=$2, updated_at=now() where id=$1", a["id"], by)
+    title = (f"Autopilot ran: {TITLES[a['type']]} (no money moves)" if by == "autopilot"
+             else f"Seller approved: {TITLES[a['type']]}")
     async with pool.acquire() as conn:
-        await watcher.log(conn, o["id"], "action", f"Seller approved: {TITLES[a['type']]}",
-                          {"action_id": str(a["id"]), "edited": a["edited"]}, _now(o))
+        await watcher.log(conn, o["id"], "action", title,
+                          {"action_id": str(a["id"]), "edited": a["edited"], "by": by}, _now(o))
 
     try:
-        result, resolution = await _execute(a, o, p)
+        result, resolution = await _execute(a, o, p, by)
     except paypal.PayPalError as e:
         await pool.execute("update actions set status='failed', paypal_response=$2, updated_at=now() where id=$1",
                            a["id"], json.dumps({"status": e.status, "error": e.body}, default=str))
@@ -112,17 +158,18 @@ async def approve(action_id: str) -> dict:
     status = await pool.fetchval("select watch_status from orders where id=$1", o["id"])
     after = await watcher.check(o["id"], trigger="fix executed") if status == "watching" else {"watch_status": status}
     return {"action_id": str(a["id"]), "status": "executed", "type": a["type"], "resolution": resolution,
-            "result": result, "after": after}
+            "result": result, "after": after, "by": by}
 
 
-async def _execute(a, o, p) -> tuple[dict, str]:
+async def _execute(a, o, p, by: str = "seller") -> tuple[dict, str]:
     pool = await db.get_pool()
     assert pool
     now = _now(o)
     kind = a["type"]
 
     if kind == "attach_tracking":
-        res = await watcher.attach_tracking(o["id"], actor="Forestall, approved by seller", notify_payer=True)
+        res = await watcher.attach_tracking(o["id"], actor="Forestall autopilot" if by == "autopilot" else "Forestall, approved by seller",
+                                         notify_payer=True)
         return {"paypal_order": res.get("id"), "paypal_status": res.get("status"),
                 "trackers": paypal.trackers_on(res)}, "tracking_fixed"
 

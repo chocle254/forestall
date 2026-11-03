@@ -5,7 +5,7 @@ import OrderDetail, { type EpCode } from "./OrderDetail";
 import Connect from "./Connect";
 import TrackPage from "./TrackPage";
 import {
-  createCardOrder, createTestOrder, getDisputes, getEasyPostCodes, getHealth, getOrders, getReport, getScenarios,
+  approveAll, createCardOrder, createTestOrder, getAutopilot, setAutopilot, getDisputes, getEasyPostCodes, getHealth, getOrders, getReport, getScenarios,
   nudgeWatcher, type Dispute, type Health, type Order, type Report, type Scenario,
 } from "./api";
 import {
@@ -77,14 +77,62 @@ function SignalBreakdown({ r }: { r: Report | null }) {
   );
 }
 
-function AttentionList({ orders }: { orders: Order[] }) {
+function Autopilot() {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => { getAutopilot().then((r) => setOn(r.on)).catch(() => {}); }, []);
+  const flip = () => { const next = !on; setOn(next); setAutopilot(next).catch(() => setOn(!next)); };
+  return (
+    <div className="autopilot">
+      <button className={`switch ${on ? "on" : ""}`} role="switch" aria-checked={!!on} onClick={flip} disabled={on === null}
+              aria-label="Autopilot"><span /></button>
+      <div>
+        <b>Autopilot {on === null ? "" : on ? "on" : "off"}</b>
+        <span className="muted small">
+          {on === false ? "Every fix waits for your approval."
+            : "Fixes that move no money (like adding tracking to PayPal) run by themselves. Refunds and replacements wait for you."}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function AttentionList({ orders, onChange }: { orders: Order[]; onChange: () => void }) {
   const items = orders.filter(needsAttention).slice(0, 5);
+  const waiting = orders.filter((o) => o.action_status === "proposed" && o.watch_status === "watching");
+  const refundTotal = waiting.reduce((t, o) =>
+    t + (o.action_type === "partial_refund" ? Number(o.action_params?.amount ?? 0) : o.action_type === "full_refund" ? Number(o.amount) : 0), 0);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const all = async () => {
+    const money_ = refundTotal > 0 ? ` This includes ${money(refundTotal)} in refunds.` : "";
+    if (!window.confirm(`Approve all ${waiting.length} waiting fixes and run them on PayPal?${money_}`)) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await approveAll();
+      setNote(`${r.approved} fix${r.approved === 1 ? "" : "es"} done${r.failed ? `, ${r.failed} failed (see the order timeline)` : ""}.`);
+      onChange();
+    } catch (e) {
+      setNote((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <section className="card">
       <div className="card-head">
         <h2>Needs your attention</h2>
-        <button className="btn ghost sm" onClick={() => go("orders")}>All orders<Icon name="chevron" size={15} /></button>
+        <div className="actions">
+          {waiting.length > 1 && (
+            <button className="btn primary sm" onClick={all} disabled={busy}>
+              <Icon name="check" size={15} />{busy ? "Approving…" : `Approve all ${waiting.length}`}
+            </button>
+          )}
+          <button className="btn ghost sm" onClick={() => go("orders")}>All orders<Icon name="chevron" size={15} /></button>
+        </div>
       </div>
+      <Autopilot />
+      {note && <p className="alert neutral small">{note}</p>}
       {items.length === 0 ? (
         <Empty icon="shield" title="You're all caught up">Forestall is watching every shipped order.</Empty>
       ) : (
@@ -160,7 +208,7 @@ function DemoCard({ ready, onCreated }: { ready: boolean; onCreated: (id: string
 const STEPS: [string, string, string][] = [
   ["card", "Payment captured", "Every PayPal order lands in Forestall."],
   ["search", "AI keeps watch", "Tracking, carrier scans and buyer messages are checked on a schedule."],
-  ["bolt", "One clear fix", "When something slips, you get one fix with a reason. You approve it."],
+  ["bolt", "One clear fix", "When something slips, the AI picks one fix. Safe ones run by themselves; refunds wait for your tap."],
   ["shield", "Proof on PayPal", "Fixes run through PayPal's API and every step is kept as evidence."],
 ];
 
@@ -293,7 +341,7 @@ function SellerApp() {
         <PageHead title="Overview" sub="Forestall watches every PayPal order from payment to delivery and stops “item not received” disputes before buyers file them." />
         <Kpis r={report} />
         <div className="overview-grid">
-          <AttentionList orders={orders ?? []} />
+          <AttentionList orders={orders ?? []} onChange={refresh} />
           <DemoCard ready={health?.paypal === "ok"} onCreated={(id) => { refresh(); go(`orders/${id}`); }} />
           <SignalBreakdown r={report} />
           <HowItWorks />

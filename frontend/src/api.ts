@@ -41,6 +41,8 @@ export type Order = {
   action_status: "proposed" | "approved" | "executed" | "failed" | "dismissed" | null;
   action_edited: boolean | null;
   action_is_followup: boolean | null;
+  /** "autopilot" when Forestall ran a no-money fix by itself. */
+  action_approved_by: "seller" | "autopilot" | null;
   action_result: Record<string, unknown> | null;
   resolution: string | null;
   refunded_amount: string;
@@ -104,6 +106,8 @@ export type CheckResult = {
   /** The AI was rate limited: the order is fine, run the check again shortly. */
   busy?: boolean;
   retry_in_s?: number;
+  /** Autopilot ran a fix that moves no money. */
+  autopilot?: { type: string; status: string };
 };
 
 export type TimelineItem = {
@@ -171,6 +175,12 @@ export const createCardOrder = () =>
 // Nudge the watcher whenever the app opens (the server throttles it).
 export const nudgeWatcher = () => fetch(`${API_URL}/api/watch/tick`, { method: "POST" }).catch(() => {});
 export const approveAction = (id: string) => post<{ status: string; paypal_error?: unknown }>(`/api/actions/${id}/approve`);
+export const approveAll = () => post<{ approved: number; failed: number; total: number }>("/api/actions/approve-all");
+export const getAutopilot = () => call<{ on: boolean }>("/api/settings/autopilot");
+export const setAutopilot = (on: boolean) =>
+  call<{ on: boolean }>("/api/settings/autopilot", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }),
+  });
 export const dismissAction = (id: string) => post<unknown>(`/api/actions/${id}/dismiss`);
 export const editAction = (id: string, body: { message?: string; note_to_payer?: string; amount?: number }) =>
   call<unknown>(`/api/actions/${id}`, {

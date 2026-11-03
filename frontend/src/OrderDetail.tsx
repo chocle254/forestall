@@ -233,7 +233,9 @@ function ActionPanel({ o, emailOn, onChange }: { o: Order; emailOn: boolean; onC
             </>
           )}
         </div>
-        <p className="small muted">Nothing runs on PayPal until you approve.</p>
+        <p className="small muted">{o.action_type.endsWith("refund") || o.action_type === "ship_replacement"
+          ? "This moves money, so it waits for you. Nothing runs on PayPal until you approve."
+          : "Nothing runs until you approve."}</p>
       </section>
     );
   }
@@ -244,10 +246,13 @@ function ActionPanel({ o, emailOn, onChange }: { o: Order; emailOn: boolean; onC
     return (
       <section className="panel tone-ok">
         <div className="panel-head">
-          <span className="panel-title"><Icon name="check" />Done: {FIX_TITLE[o.action_type]}</span>
+          <span className="panel-title"><Icon name="check" />{o.action_approved_by === "autopilot" ? "Done automatically" : "Done"}: {FIX_TITLE[o.action_type]}</span>
           {o.resolution && <span className="tag">{RESOLUTION_LABEL[o.resolution] ?? o.resolution}</span>}
         </div>
         {o.action_type === "attach_tracking" && <p>PayPal now holds the tracking on this transaction and has emailed the buyer.</p>}
+        {o.action_approved_by === "autopilot" && (
+          <p className="small muted"><Icon name="sparkle" size={12} /> Autopilot ran this without asking because it moves no money. Refunds and replacements always wait for you.</p>
+        )}
         {o.action_type.endsWith("refund") && (
           <p>PayPal refunded <b>{money(String(r.amount), o.currency)}</b> · refund <code>{String(r.refund_id)}</code> ({String(r.status)})</p>
         )}
@@ -308,6 +313,7 @@ function SandboxControls({ o, scenarios, epCodes, onDone }: {
       if (r.busy) setNote("The AI is still busy. Forestall will check this order again by itself in a few minutes.");
       else if (r.error) setNote(r.error);
       else if (r.watch_status === "protected") setNote("Delivered with proof on PayPal. This order is now protected.");
+      else if (r.autopilot) setNote("Autopilot fixed this by itself: it moves no money, so it didn't need your approval.");
       onDone();
     } catch (e) {
       setNote(`Failed: ${(e as Error).message}`);

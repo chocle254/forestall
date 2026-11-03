@@ -81,7 +81,7 @@ async def list_orders():
                f.risk_level, f.signal, f.reason as flag_reason, f.updated_at as flagged_at,
                a.id as action_id, a.type as action_type, a.params as action_params,
                a.justification as action_justification, a.status as action_status,
-               a.edited as action_edited, a.parent_action_id is not null as action_is_followup,
+               a.edited as action_edited, a.approved_by as action_approved_by, a.parent_action_id is not null as action_is_followup,
                a.paypal_response as action_result, o.resolution, o.refunded_amount,
                i.findings as findings, i.tool_calls as tool_calls, a.model as action_model,
                la.result as ai_check, la.model as ai_model, la.created_at as ai_checked_at
@@ -153,6 +153,27 @@ def _action_errors(e: Exception):
     if isinstance(e, easypost.EasyPostError):
         raise HTTPException(502, {"easypost_status": e.status, "easypost_error": e.body})
     raise e
+
+
+@api.post("/actions/approve-all")
+async def approve_all_actions():
+    """One tap: approve every fix that is waiting for the seller."""
+    return await actions.approve_all()
+
+
+@api.get("/settings/autopilot")
+async def get_autopilot():
+    return {"on": await actions.autopilot_on()}
+
+
+class AutopilotIn(BaseModel):
+    on: bool
+
+
+@api.put("/settings/autopilot")
+async def set_autopilot(body: AutopilotIn):
+    await db.set_setting("autopilot", "on" if body.on else "off")
+    return {"on": body.on}
 
 
 @api.post("/actions/{action_id}/approve")
