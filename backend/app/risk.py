@@ -177,7 +177,10 @@ async def assess(order_id: str, force: bool = False) -> dict:
         a.next_check_in_hours = max(1, min(24, a.next_check_in_hours))
         # Keep the label honest: "no tracking" can't apply once the tracking is on PayPal.
         if a.signal == "no_tracking" and order["tracking_attached_at"]:
-            a.signal = "buyer_concern" if a.buyer_mood in ("worried", "frustrated", "angry") else "stalled"
+            if context.get("latest_carrier_status") == "delivered" and context.get("buyer_messages"):
+                a.signal = "delivered_not_received"
+            else:
+                a.signal = "buyer_concern" if a.buyer_mood in ("worried", "frustrated", "angry") else "stalled"
         # Safety rail: shipped with tracking, but none on PayPal, is never "no risk" (the seller has no proof).
         if (a.risk_level == "low" and order["shipped_at"] and order["tracking_number"]
                 and not order["tracking_attached_at"]):

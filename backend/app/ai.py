@@ -62,12 +62,16 @@ def backup_configured() -> bool:
 
 
 def routes() -> list[Route]:
-    """Main provider's models first (main model, then fallbacks), then the backup provider's models."""
-    main = _split(",".join([settings.ai_model, settings.ai_extra_models, settings.ai_fallback_model]))
-    out = [Route(m, settings.ai_base_url, api_key(), m) for m in main]
+    """Main model first, then the backup provider (same strong model elsewhere), then the smaller fallbacks.
+
+    Smaller models come last: they misread evidence more often (e.g. say tracking is missing when it's on PayPal).
+    """
+    out = [Route(settings.ai_model, settings.ai_base_url, api_key(), settings.ai_model)]
     if backup_configured():
         out += [Route(f"{m} · {settings.ai2_name}", settings.ai2_base_url, settings.ai2_api_key, m)
                 for m in _split(settings.ai2_models)]
+    extra = _split(",".join([settings.ai_extra_models, settings.ai_fallback_model]))
+    out += [Route(m, settings.ai_base_url, api_key(), m) for m in extra if m != settings.ai_model]
     return out
 
 
