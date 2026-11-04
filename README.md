@@ -80,7 +80,7 @@ One screen, built around a single workflow. It's a work queue, not a dashboard o
 │ ┌──────────┬──────────┬────────┬───────────────┬──────────┐  │
 │ │ Order    │ Buyer    │ Risk   │ Why           │ Action   │  │
 │ ├──────────┼──────────┼────────┼───────────────┼──────────┤  │
-│ │ #8F21…   │ A. Mensah│ ● HIGH │ Paid 3 days   │ [Approve]│  │
+│ │ #8F21…   │ S. Carter│ ● HIGH │ Paid 3 days   │ [Approve]│  │
 │ │ $84.00   │          │        │ ago, no track-│          │  │
 │ │          │          │        │ ing on PayPal │          │  │
 │ │ #2C9A…   │ J. Ruiz  │ ● MED  │ Stuck in Mem- │ [Approve]│  │

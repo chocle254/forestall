@@ -728,6 +728,8 @@ async def create_test_order(request: Request):
             item,
             return_url=f"{origin}/api/paypal/return",
             cancel_url=f"{origin}/?checkout=cancelled",
+            buyer_name=random.choice(DEMO_BUYERS),
+            ship_to=random.choice(orders.DEMO_ADDRESSES),
         )
     except paypal.PayPalError as e:
         raise HTTPException(502, {"paypal_status": e.status, "paypal_error": e.body})
@@ -737,7 +739,7 @@ async def create_test_order(request: Request):
     return {"paypal_order_id": order["id"], "item": item, "approve_url": link}
 
 
-DEMO_BUYERS = ["Amina Wanjiru", "Jordan Ruiz", "Priya Nair", "Tom Becker", "Grace Mensah", "Leo Tanaka"]
+DEMO_BUYERS = ["Emily Carter", "Jordan Ruiz", "Priya Nair", "Tom Becker", "Sarah Mitchell", "Leo Tanaka"]
 
 
 @api.post("/demo/card-order")

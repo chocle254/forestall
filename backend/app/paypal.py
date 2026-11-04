@@ -78,7 +78,9 @@ async def check() -> str:
 
 # --- Orders v2 ---------------------------------------------------------------
 
-async def create_order(item: dict, return_url: str, cancel_url: str) -> dict:
+async def create_order(item: dict, return_url: str, cancel_url: str,
+                       buyer_name: str | None = None, ship_to: dict | None = None) -> dict:
+    """Checkout order. With ship_to, PayPal shows that address instead of the one on the buyer's account."""
     amount = f"{item['price']:.2f}"
     body = {
         "intent": "CAPTURE",
@@ -91,6 +93,8 @@ async def create_order(item: dict, return_url: str, cancel_url: str) -> dict:
                     "value": amount,
                     "breakdown": {"item_total": {"currency_code": "USD", "value": amount}},
                 },
+                **({"shipping": {"type": "SHIPPING", "name": {"full_name": buyer_name or "Test Buyer"}, "address": ship_to}}
+                   if ship_to else {}),
                 "items": [
                     {
                         "name": item["name"],
@@ -106,7 +110,7 @@ async def create_order(item: dict, return_url: str, cancel_url: str) -> dict:
             "paypal": {
                 "experience_context": {
                     "brand_name": "Forestall Demo Store",
-                    "shipping_preference": "GET_FROM_FILE",
+                    "shipping_preference": "SET_PROVIDED_ADDRESS" if ship_to else "GET_FROM_FILE",
                     "user_action": "PAY_NOW",
                     "return_url": return_url,
                     "cancel_url": cancel_url,
