@@ -10,7 +10,7 @@ from . import db
 CATALOG = [
     {"sku": "WALLET-BRN", "name": "Handstitched leather wallet", "price": 42.00},
     {"sku": "MUG-CER-2", "name": "Ceramic pour-over mug (set of 2)", "price": 36.50},
-    {"sku": "TOTE-KIKOY", "name": "Kikoy cotton tote bag", "price": 24.00},
+    {"sku": "TOTE-CNV", "name": "Canvas tote bag", "price": 24.00},
     {"sku": "SOAP-SHEA-3", "name": "Shea butter soap trio", "price": 18.75},
 ]
 
