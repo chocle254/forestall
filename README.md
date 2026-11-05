@@ -8,6 +8,16 @@ Built for the Devpost PayPal AI Hackathon (2026).
 
 **Live demo:** https://forestall-gamma.vercel.app (PayPal sandbox, no login needed; see [Try it](#try-it-judges)).
 
+### Check the AI is live
+
+The AI runs on every check in the deployed app, not just in the docs:
+
+- [`/api/health`](https://forestall-gamma.vercel.app/api/health) shows `"ai":"ok"`, the model (`openai/gpt-oss-120b`) and its fallback routes.
+- [`/api/report`](https://forestall-gamma.vercel.app/api/report) counts the AI checks run, orders flagged and fixes executed on PayPal so far.
+- In the app, the risk queue's **Why (AI)** column and **Next step** come straight from the AI, and every order page shows its **AI investigation** (tools it called, what it found, its next check time).
+
+Where it lives in the code: `backend/app/risk.py` runs the check, `investigate.py` holds the agent's tools (carrier tracking, facility alerts, the live PayPal order, buyer messages, seller policy), `recommend.py` picks the fix, and `disputes.py` drafts dispute evidence. `ai.py` calls the model through an OpenAI-compatible API.
+
 ### Built with
 
 - **PayPal APIs (sandbox):** Orders v2 (checkout, capture, read, add tracking), Payments v2 (refunds), Disputes v1 (read + provide evidence), Webhooks (`PAYMENT.CAPTURE.COMPLETED`, `CUSTOMER.DISPUTE.CREATED`, signature-verified).
