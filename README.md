@@ -155,11 +155,49 @@ PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREAT
 
 ## Try it (judges)
 
-1. Open https://forestall-gamma.vercel.app
-2. Tap **Quick test order**. PayPal (sandbox) captures a payment with its test card, and no login is needed.
-3. On the new order, pick a delivery story (for example *Seller forgets to add tracking to PayPal*) and tap **Mark shipped**.
-4. Tap **Advance 1 day** a few times. Forestall re-checks the order each day and flags it the moment a risk appears, with a plain-language reason.
-5. Tap **Show timeline** to see every step Forestall took, including PayPal's own confirmations.
+**No account, login or credentials needed.** Everything runs in the PayPal **sandbox**, so no real money moves. Open **https://forestall-gamma.vercel.app** on a computer or phone. The whole walkthrough takes about 10 minutes.
+
+**Before you start**
+- This is **one shared demo shop**, so you'll also see orders other testers made. Follow the order you create.
+- One **Advance 1 day** tap is one simulated day. The AI checks the order each time, which takes a few seconds (the button shows *AI is checking…*). If the AI providers are busy, the page says so and retries by itself.
+- **Autopilot** (switch on the Overview page) is on: fixes that move no money run by themselves. Refunds and replacements always wait for your **Approve**.
+
+### Test 1: missing tracking, fixed on autopilot (3 min)
+1. On **Overview**, tap **Quick test order**. PayPal's sandbox captures a payment with its test card, and the new order opens.
+2. In the delivery story list, pick **Seller forgets to add tracking to PayPal**, then tap **Mark shipped**.
+3. Tap **Advance 1 day** once or twice.
+4. **What you should see:** the AI flags the order and explains, in plain words, that the tracking isn't on the PayPal transaction. Autopilot attaches it through PayPal's Orders API, and the order shows PayPal's response. Scroll to **Timeline** to see each step, including PayPal's confirmation.
+
+### Test 2: worried buyer, refund waits for you (3 min)
+1. Go back to **Overview** and tap **Quick test order** again.
+2. Pick **Buyer gets worried before delivery**, tap **Mark shipped**, then tap **Advance 1 day** until the order is flagged (usually 1–2 taps).
+3. **What you should see:** the AI connects the buyer's message with the hub delay and proposes one fix, often a small partial refund (never more than 25%) with a message to the buyer. It waits for you.
+4. Tap **Approve**. Forestall runs the refund through PayPal's Payments API and shows the refund ID PayPal returns. You can also **Edit** or **Dismiss** it.
+5. If the fix offered the buyer a choice, use **Sandbox: reply as the buyer** to answer. The AI reads the reply and queues what the buyer chose for your approval.
+
+### Test 3: "delivered" but not received (2 min)
+1. Create another order, pick **Carrier says delivered, buyer says no**, tap **Mark shipped**, and advance 2–3 days.
+2. **What you should see:** the AI compares the carrier's GPS delivery proof with the PayPal shipping address, finds the parcel was left 380 m away, rates it high risk, and drafts a message to the buyer before they open a dispute.
+
+The other stories, **Parcel gets stuck at a hub** and **On track**, work the same way. The order page also has **Real carrier API: EasyPost test parcels**, which create real EasyPost test trackers instead of the simulator.
+
+### Test 4: the risk queue and Approve all (1 min)
+1. Open **Orders**. Every order is ranked by risk. The **Why (AI)** column is the AI's reason, and **Next step** is its proposed fix.
+2. Fixes waiting for approval have an **Approve** button in the row. **Approve all** (on Overview and Orders) first shows what will run, including the refund total, and runs the whole queue after you confirm.
+
+### Test 5: a dispute and its AI evidence (2 min)
+1. Open **Disputes**. It shows disputes PayPal reported through its webhook. A real sandbox "item not received" dispute is there, filed by a sandbox buyer.
+2. **What you should see:** **Evidence drafted by AI**, written from the order's recorded history (payment, tracking on PayPal, carrier scans, refunds), with a strength rating and the facts it relies on. Tap **Evidence report (PDF)** to see the document Forestall attaches.
+3. You can **Edit** or **Redraft** it. **Approve and submit to PayPal** sends it through the Disputes API, using whatever PayPal allows at that stage (evidence, supporting info or a message). Submitting is final for that dispute, so the next judge will see it as already submitted.
+
+### Test 6: the store connection (optional, 1 min)
+Open **Connect** and tap **Send a test fulfilment**. It sends a signed, WooCommerce-shaped "order completed" webhook through the same code a real store would use: Forestall matches it to a PayPal order, marks it shipped, attaches the tracking to PayPal and starts watching.
+
+### Check it's live
+- [`/api/health`](https://forestall-gamma.vercel.app/api/health): PayPal (`sandbox`), the AI model, the database and EasyPost are connected.
+- [`/api/report`](https://forestall-gamma.vercel.app/api/report): totals so far, including AI checks run, risks caught, fixes PayPal confirmed and the share of shipped orders with proof on PayPal.
+
+**What's simulated:** the PayPal sandbox has no carrier data, so the delivery stories use a simulated carrier (they're labelled that way in the app). Payments, tracking, refunds, disputes and webhooks are all real PayPal sandbox API calls.
 
 ## How Forestall follows an order
 
