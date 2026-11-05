@@ -5,6 +5,7 @@ details and documents are filled in by code. Nothing is submitted without the se
 """
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -176,6 +177,18 @@ def _evidence_pdf(dispute: dict, facts: dict, timeline: list[dict], draft: Evide
     return pdf.render(f"Evidence report: PayPal order {o['paypal_order_id']}", lines)
 
 
+def _fix_tracking(draft: EvidenceDraft, tracking: str | None) -> EvidenceDraft:
+    """The model sometimes drops or swaps a digit in long tracking numbers. Any long digit run
+    in its text that isn't the real number is replaced with the order's own tracking number."""
+    if not tracking or not tracking.isdigit():
+        return draft
+    # Only standalone digit runs of about the same length, so IDs like 9229048844513362Y are left alone.
+    near = lambda m: tracking if abs(len(m.group(0)) - len(tracking)) <= 2 else m.group(0)
+    fix = lambda s: re.sub(r"(?<![A-Za-z0-9])\d{12,}(?![A-Za-z0-9])", near, s)
+    return draft.model_copy(update={"notes": fix(draft.notes), "key_facts": [fix(k) for k in draft.key_facts],
+                                    "strength_reason": fix(draft.strength_reason)})
+
+
 async def draft_evidence(dispute_id: str) -> dict:
     pool = await db.get_pool()
     assert pool
@@ -192,6 +205,7 @@ async def draft_evidence(dispute_id: str) -> dict:
     draft = await ai.chat_json(SYSTEM, "Draft the response to this dispute:\n" + prompt[:14000], EvidenceDraft)
 
     o = facts["order"]
+    draft = _fix_tracking(draft, o["tracking_number"])
     evidences = []
     if o["tracking_number"] and facts["trackers_on_paypal_transaction (live)"]:
         evidences.append({"evidence_type": "PROOF_OF_FULFILLMENT",
@@ -261,6 +275,10 @@ async def submit(dispute_id: str) -> dict:
             doc = await evidence_document(dispute_id)
             res = await paypal.provide_evidence(dispute_id, ev["evidences"], [("forestall-evidence.pdf", doc, "application/pdf")])
             how = "submitted evidence (with the Forestall evidence report PDF)"
+        elif "provide_supporting_info" in allowed:
+            doc = await evidence_document(dispute_id)
+            res = await paypal.provide_supporting_info(dispute_id, ev["notes"], [("forestall-evidence.pdf", doc, "application/pdf")])
+            how = "sent supporting information (with the Forestall evidence report PDF)"
         elif "send_message" in allowed:
             res, how = await paypal.send_dispute_message(dispute_id, ev["notes"]), "sent the response as a dispute message"
         else:

@@ -283,6 +283,19 @@ async def provide_evidence(dispute_id: str, evidences: list[dict], files: list[t
     return _json(r) if r.content else {}
 
 
+async def provide_supporting_info(dispute_id: str, notes: str, files: list[tuple[str, bytes, str]]) -> dict:
+    """Seller adds notes (and documents) to a dispute PayPal is already reviewing."""
+    headers = {"Authorization": f"Bearer {await _access_token()}"}
+    multipart = [("input", ("input.json", __import__("json").dumps({"notes": notes[:2000]}), "application/json"))]
+    multipart += [("supporting_document", (name, data, ctype)) for name, data, ctype in files]
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(f"{settings.paypal_base_url}/v1/customer/disputes/{dispute_id}/provide-supporting-info",
+                              headers=headers, files=multipart)
+    if r.status_code >= 400:
+        raise PayPalError(r.status_code, _json(r))
+    return _json(r) if r.content else {}
+
+
 async def send_dispute_message(dispute_id: str, message: str) -> dict:
     return await request("POST", f"/v1/customer/disputes/{dispute_id}/send-message", json={"message": message[:2000]})
 
