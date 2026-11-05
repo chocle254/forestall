@@ -27,6 +27,13 @@ const theme = themeQuartz.withParams({
   spacing: 7,
 });
 
+// Date filter: compare by calendar day, ignoring the time of payment.
+const sameDay = (day: Date, value: Date | null) => {
+  if (!value) return -1;
+  const v = new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  return v < day.getTime() ? -1 : v > day.getTime() ? 1 : 0;
+};
+
 const RISK_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 const score = (o: Order) =>
   (o.risk_level && o.watch_status === "watching" ? RISK_RANK[o.risk_level] * 10 : 0)
@@ -142,18 +149,19 @@ export default function RiskQueue({ orders, onSelect, onChange }: {
       valueGetter: (p) => (p.data ? score(p.data) : 0), sort: "desc",
     },
     { headerName: "Buyer · order", minWidth: 180, flex: 1, cellRenderer: BuyerCell, autoHeight: true,
-      valueGetter: (p) => p.data?.buyer_name ?? "" },
+      valueGetter: (p) => p.data?.buyer_name ?? "", filter: "agTextColumnFilter" },
     {
       headerName: "Amount", width: 110, type: "rightAligned", cellClass: "num",
-      valueGetter: (p) => Number(p.data?.amount ?? 0),
+      valueGetter: (p) => Number(p.data?.amount ?? 0), filter: "agNumberColumnFilter",
       valueFormatter: (p) => (p.data ? money(p.data.amount, p.data.currency) : ""),
     },
-    { headerName: "Problem", minWidth: 160, valueGetter: (p) => (p.data?.signal ? SIGNAL_LABEL[p.data.signal] ?? p.data.signal : "—") },
-    { headerName: "Why (AI)", field: "flag_reason", minWidth: 260, flex: 2, wrapText: true, autoHeight: true, cellClass: "cell-wrap" },
+    { headerName: "Problem", minWidth: 160, filter: "agTextColumnFilter", valueGetter: (p) => (p.data?.signal ? SIGNAL_LABEL[p.data.signal] ?? p.data.signal : "—") },
+    { headerName: "Why (AI)", field: "flag_reason", filter: "agTextColumnFilter", minWidth: 260, flex: 2, wrapText: true, autoHeight: true, cellClass: "cell-wrap" },
     { headerName: "Next step", minWidth: 180, cellRenderer: StepCell, autoHeight: true, sortable: false },
     { headerName: "", width: 120, sortable: false,
       cellRenderer: (p: ICellRendererParams<Order>) => p.data && <ApproveButton o={p.data} onDone={onChange} /> },
-    { headerName: "Paid", width: 96, valueGetter: (p) => (p.data ? new Date(p.data.captured_at) : null),
+    { headerName: "Paid", width: 110, valueGetter: (p) => (p.data ? new Date(p.data.captured_at) : null),
+      filter: "agDateColumnFilter", filterParams: { comparator: sameDay },
       valueFormatter: (p) => (p.value ? shortDate((p.value as Date).toISOString()) : "") },
   ], [onChange]);
 

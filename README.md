@@ -114,7 +114,7 @@ One screen, built around a single workflow. It's a work queue, not a dashboard o
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Risk queue (AG Grid Community 36):** every order ranked by risk (open risk, then pending approvals, then watched orders). Filter chips (Needs attention, Needs approval, At risk, Watching, Not shipped, Protected/resolved), quick search, per-column text/number/date filters, pagination, and an **Approve** button in the row that executes the fix on PayPal. Tapping a row opens the full order card. Themed from the app's own color tokens, so it follows light and dark mode.
+- **Risk queue (AG Grid Community 36):** every order ranked by risk (open risk, then pending approvals, then watched orders). Tabs (Needs attention, Watching, Not shipped, Protected, All), a search box (buyer, order or reason), per-column filters (text for buyer, problem and the AI's reason; number for amount; date for paid), pagination, and an **Approve** button in the row that executes the fix on PayPal. Tapping a row opens the full order card. Themed from the app's own color tokens, so it follows light and dark mode.
 - **Order panel:** the timeline, the AI's reason, the proposed PayPal call with its exact parameters, and the PayPal response once it runs.
 - **Disputes:** the evidence draft, editable before submitting.
 - **Insights:** one small panel counting flags by type, so recurring problems stand out (for example, "you forget tracking on weekend orders").
