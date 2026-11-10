@@ -14,7 +14,7 @@ The AI runs on every check in the deployed app, not just in the docs:
 
 - [`/api/health`](https://forestall-gamma.vercel.app/api/health) shows `"ai":"ok"`, the model (`openai/gpt-oss-120b`) and its fallback routes.
 - [`/api/report`](https://forestall-gamma.vercel.app/api/report) counts the AI checks run, orders flagged and fixes executed on PayPal so far.
-- In the app, the risk queue's **Why (AI)** column and **Next step** come straight from the AI, and every order page shows its **AI investigation** (tools it called, what it found, its next check time).
+- In the app, the **Orders** risk queue (AG Grid) shows the AI's output in every row: **AI risk** (its risk level, confidence and when it last checked), **Why (AI)** (its reason) and **AI fix · PayPal call** (the fix it chose and the PayPal API it runs, with an inline **Approve**). Every order page shows the full **AI investigation** (tools it called, what it found, its next check time).
 
 Where it lives in the code: `backend/app/risk.py` runs the check, `investigate.py` holds the agent's tools (carrier tracking, facility alerts, the live PayPal order, buyer messages, seller policy), `recommend.py` picks the fix, and `disputes.py` drafts dispute evidence. `ai.py` calls the model through an OpenAI-compatible API.
 
@@ -182,7 +182,7 @@ PayPal surface: webhooks `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREAT
 The other stories, **Parcel gets stuck at a hub** and **On track**, work the same way. The order page also has **Real carrier API: EasyPost test parcels**, which create real EasyPost test trackers instead of the simulator.
 
 ### Test 4: the risk queue and Approve all (1 min)
-1. Open **Orders**. Every order is ranked by risk. The **Why (AI)** column is the AI's reason, and **Next step** is its proposed fix.
+1. Open **Orders**. Every order is ranked by the AI's risk call. **AI risk** shows the level, the AI's confidence and when it last checked; **Why (AI)** is its reason; **AI fix · PayPal call** is the fix it proposed and the PayPal endpoint that fix calls. Every column can be sorted and filtered (for example, type `high` in the AI risk filter).
 2. Fixes waiting for approval have an **Approve** button in the row. **Approve all** (on Overview and Orders) first shows what will run, including the refund total, and runs the whole queue after you confirm.
 
 ### Test 5: a dispute and its AI evidence (2 min)
@@ -219,7 +219,26 @@ Open **Connect** and tap **Send a test fulfilment**. It sends a signed, WooComme
 
 - **Model:** `openai/gpt-oss-120b` on Groq (free tier), with the same model on Cerebras as backup and smaller models (`gpt-oss-20b`, Qwen) as a last resort. Any OpenAI-compatible API works via `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY`.
 - **Every check is an investigation (agent with tools).** The model gets the order's facts and decides which tools to call: carrier tracking (scans, exceptions, expected delivery, proof of delivery with GPS distance), carrier facility alerts, the **live PayPal order** (buyer's shipping address and trackers on the transaction), buyer messages, and the seller's policy. It returns its reasoning steps (what it checked, what it learned), a risk level and reason, every fact tagged by source (carrier / PayPal / buyer), the buyer's tone and needs, its next check time with a reason, and whether to close the order. The full tool-call trace is stored (`investigations`) and shown on the order page as **AI investigation**. In the sandbox the carrier tools read a simulator; in production they'd call a carrier or tracking API.
-- **Recommend:** for each flagged order the model picks one fix, including whether to attach tracking, (`attach_tracking`, `message_buyer` or `partial_refund`) and writes the words. The backend fills every PayPal parameter from real order data and enforces limits: only the order's own tracking number, refunds capped at 25%, messages that lead with what Forestall found and give the buyer a concrete resolution today (for example a same-day replacement or a r- **Built for many judges at once on a free plan:** when Groq's `gpt-oss-120b` is busy, the same model on a second provider (`AI2_*`, e.g. Cerebras's free tier) takes over at once; smaller models (`gpt-oss-20b`, then Qwen) come last, because in testing they misread evidence more often. A provider that's out of quota is skipped until it recovers. If all are busy the page says so and retries by itself. Tested with four people running demo stories at once: every check completed.e running demo stories at once: every check completed.
+- **Recommend:** for each flagged order the model picks one fix (`attach_tracking`, `message_buyer` or `partial_refund`) and writes the words. The backend fills every PayPal parameter from real order data and enforces limits: only the order's own tracking number, refunds capped at 25%, messages that lead with what Forestall found and give the buyer a concrete resolution today (for example a same-day replacement or a refund, buyer's choice), never "I'll get back to you".
+- **Built for many judges at once on a free plan:** when Groq's `gpt-oss-120b` is busy, the same model on a second provider (`AI2_*`, e.g. Cerebras's free tier) takes over at once; smaller models (`gpt-oss-20b`, then Qwen) come last, because in testing they misread evidence more often. A provider that's out of quota is skipped until it recovers. If all are busy the page says so and retries by itself. Tested with four people running demo stories at once: every check completed.
+- **What the model returns** (validated with Pydantic in `risk.py` and `recommend.py`; anything off-schema is rejected and retried):
+
+  ```jsonc
+  // Check (risk.py → Assessment)
+  { "steps": [{ "source": "carrier", "checked": "Carrier tracking", "learned": "No scans for 3 days at the Memphis hub" }],
+    "risk_level": "high",            // low | medium | high
+    "signal": "stalled",             // no_tracking | stalled | buyer_concern | delivered_not_received | carrier_exception | none
+    "reason": "…", "summary": "…",
+    "buyer_mood": "worried", "confidence": "high",
+    "next_check_in_hours": 12, "next_check_reason": "…", "safe_to_close": false }
+
+  // Fix (recommend.py → Recommendation)
+  { "type": "partial_refund",        // attach_tracking | message_buyer | partial_refund
+    "justification": "…", "buyer_message": "…", "refund_amount": 6.00,
+    "offers": ["replacement", "full_refund"] }
+  ```
+
+  How the fix is chosen: the model reads its own investigation (what's wrong, the buyer's mood and needs) and picks the one fix that removes the dispute risk soonest. Code then decides what the buyer may be offered under the seller's policy (`allowed_offers` in `recommend.py`: a replacement or full refund only when the facts are serious) and sends the model back if it offers more. Missing tracking always gets `attach_tracking` first. The backend then fills the PayPal call itself (`POST /v2/checkout/orders/{id}/track` or `POST /v2/payments/captures/{id}/refund`), caps refunds at 25% and checks the tracking number is the order's own.
 - Every assessment is stored with its input and model (`assessments` table): an audit trail and a cache, so unchanged orders don't spend another AI call.
 - The AI never calls PayPal. It only proposes; the backend acts, by itself for no-money fixes (autopilot) and after the seller approves for refunds and replacements.
 
@@ -236,8 +255,51 @@ Open **Connect** and tap **Send a test fulfilment**. It sends a signed, WooComme
 3. Add the variables from `backend/.env.example`: PayPal sandbox app credentials (developer.paypal.com), an AI key (`AI_API_KEY`, a free Groq key works), optionally a backup AI key (`AI2_API_KEY`, free at cloud.cerebras.ai) and an EasyPost test key. SMTP is optional.
 4. Open the deployment: the status card should show API, Database and PayPal as connected.
 
-Local backend: `cd backend && cp .env.example .env` (fill it in), then `pip install -r requirements.txt && uvicorn app.main:app --reload`
-Local frontend: `cd frontend && npm install && VITE_API_URL=http://localhost:8000 npm run dev`
+### Run it locally (about 10 minutes)
+
+You need Python 3.12+, Node 22+, a Postgres database, a PayPal sandbox app and a free AI key.
+
+1. **Get the keys (about 5 minutes, all free):**
+   - **PayPal sandbox:** sign in at [developer.paypal.com](https://developer.paypal.com) → *Apps & Credentials* → *Sandbox* → *Create App*. Copy the **Client ID** and **Secret**.
+   - **AI:** create a key at [console.groq.com](https://console.groq.com/keys).
+   - **Database:** a free [Neon](https://neon.tech) project (copy its connection string), or a local Postgres: `docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=pg postgres:16`, then use `postgresql://postgres:pg@localhost:5432/postgres?sslmode=disable`.
+2. **Backend** (terminal 1):
+   ```bash
+   cd backend
+   cp .env.example .env        # fill in DATABASE_URL, PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, AI_API_KEY
+   python -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt
+   uvicorn app.main:app --reload --port 8000
+   ```
+   Tables are created on the first request. Check http://localhost:8000/api/health: `database`, `paypal` and `ai` should say `ok`.
+3. **Frontend** (terminal 2):
+   ```bash
+   cd frontend
+   npm install
+   VITE_API_URL=http://localhost:8000 npm run dev
+   ```
+   Open http://localhost:5173 and follow [Try it](#try-it-judges) from Test 1. Everything except incoming webhooks works locally.
+4. **Webhooks (optional):** PayPal can't reach `localhost`. To receive them, expose port 8000 with a tunnel (for example `ngrok http 8000`), add a webhook in your sandbox app pointing at `https://<tunnel>/api/webhooks/paypal` with `PAYMENT.CAPTURE.COMPLETED` and `CUSTOMER.DISPUTE.CREATED`, and set `PAYPAL_WEBHOOK_ID`. Without them, test orders are still captured directly by the app.
+
+### Environment variables (`backend/.env`)
+
+| Variable | Needed? | What it's for |
+|---|---|---|
+| `DATABASE_URL` | **Required** | Postgres connection string. Add `?sslmode=disable` for a local database without TLS. |
+| `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | **Required** | Your PayPal **sandbox** app. All calls go to `api-m.sandbox.paypal.com`. |
+| `AI_API_KEY` | **Required** | Key for the main AI provider (Groq by default). |
+| `AI_BASE_URL`, `AI_MODEL`, `AI_FALLBACK_MODEL` | Optional | Any OpenAI-compatible API and model. Defaults: Groq, `openai/gpt-oss-120b`, Qwen fallback. |
+| `AI2_API_KEY`, `AI2_BASE_URL`, `AI2_MODELS`, `AI2_NAME` | Optional | Backup AI provider used when the main one is busy (Cerebras free tier by default). |
+| `PAYPAL_WEBHOOK_ID` | Optional | Verifies PayPal webhook signatures. Needed only to receive webhooks. |
+| `EASYPOST_API_KEY` | Optional | EasyPost **test** key (`EZTK…`) for real carrier test parcels. Without it, the simulated delivery stories still work. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | Optional | Buyer emails. Without them, the seller sends messages and Forestall records them. |
+| `EMAIL_REDIRECT_TO` | Optional | Sandbox: send every buyer email to your own inbox. |
+| `STORE_NAME` | Optional | Shop name used in emails and the tracking page. |
+| `WOOCOMMERCE_WEBHOOK_SECRET` | Optional | Signing secret for the WooCommerce store connection. |
+| `CORS_ORIGINS` | Optional | Origins allowed to call the API. Default `http://localhost:5173`. |
+| `PUBLIC_URL` | Optional | Base URL for links in emails. Default: the URL the request came in on. |
+
+Frontend (`frontend/.env`): `VITE_API_URL` points the app at the API. Leave it empty when both run under one domain (as on Vercel).
 
 ## Status
 

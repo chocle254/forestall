@@ -90,9 +90,55 @@ function ApproveButton({ o, onDone }: { o: Order; onDone: () => void }) {
 const BuyerCell = ({ data }: ICellRendererParams<Order>) => data && (
   <div className="cell-stack"><b>{data.buyer_name ?? "Unknown buyer"}</b><span className="muted mono small">{data.paypal_order_id}</span></div>
 );
+// The PayPal API each fix calls when it runs (actions.py).
+const PAYPAL_CALL: Record<string, string> = {
+  attach_tracking: "Orders v2 · POST /track",
+  partial_refund: "Payments v2 · POST /refund",
+  full_refund: "Payments v2 · POST /refund",
+  ship_replacement: "Orders v2 · POST /track",
+};
 const StepCell = ({ data }: ICellRendererParams<Order>) => {
   const s = data && nextStep(data);
-  return s ? <div className="cell-stack"><b>{s.title}</b><span className="muted small">{s.sub}</span></div> : <span className="muted">—</span>;
+  const call = data?.action_type && PAYPAL_CALL[data.action_type];
+  return s ? (
+    <div className="cell-stack">
+      <b>{s.title}</b><span className="muted small">{s.sub}</span>
+      {call && <span className="paypal-call mono">PayPal {call}</span>}
+    </div>
+  ) : <span className="muted">—</span>;
+};
+
+// The AI's current risk call for an order: the open flag if there is one, else its latest check.
+const aiRisk = (o: Order): string | null =>
+  o.watch_status === "protected" || o.watch_status === "closed" ? null : o.risk_level ?? o.ai_check?.risk_level ?? null;
+const ago = (iso: string) => {
+  const m = Math.max(0, Math.round((Date.now() - +new Date(iso)) / 60000));
+  return m < 60 ? `${m}m ago` : m < 48 * 60 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
+};
+const RISK_BADGE: Record<string, string> = { high: "danger", medium: "warn", low: "info" };
+const RiskCell = ({ data: o }: ICellRendererParams<Order>) => {
+  if (!o) return null;
+  const level = aiRisk(o);
+  if (!level) return <span className="muted small">{o.watch_status === "not_shipped" ? "Not checked yet" : "No risk"}</span>;
+  const conf = o.ai_check?.confidence;
+  return (
+    <div className="cell-stack">
+      <span className={`badge ${RISK_BADGE[level] ?? "neutral"}`}>{level[0].toUpperCase() + level.slice(1)} risk</span>
+      <span className="muted small">AI{conf ? ` · ${conf} confidence` : ""}{o.ai_checked_at ? ` · ${ago(o.ai_checked_at)}` : ""}</span>
+    </div>
+  );
+};
+
+const aiWhy = (o: Order) => o.flag_reason ?? o.ai_check?.reason ?? "";
+
+// Where the order is in its life, separate from the AI's risk call.
+const STAGE: Record<Order["watch_status"], [string, string]> = {
+  not_shipped: ["Not shipped", "neutral"], watching: ["Watching", "info"], protected: ["Protected", "ok"], closed: ["Resolved", "ok"],
+};
+const StageCell = ({ data: o }: ICellRendererParams<Order>) => {
+  if (!o) return null;
+  const [label, tone] = STAGE[o.watch_status];
+  return <span className={`badge ${tone}`}>{label}</span>;
 };
 
 function OrderCards({ rows, onSelect, onChange }: { rows: Order[]; onSelect: (id: string) => void; onChange: () => void }) {
@@ -109,7 +155,7 @@ function OrderCards({ rows, onSelect, onChange }: { rows: Order[]; onSelect: (id
               </div>
               <div className="oc-buyer">{o.buyer_name ?? "Unknown buyer"} <span className="muted small">· {shortDate(o.captured_at)}</span></div>
               {o.signal && <div className="oc-signal">{SIGNAL_LABEL[o.signal] ?? o.signal}</div>}
-              {o.flag_reason && <p className="oc-reason">{o.flag_reason}</p>}
+              {aiWhy(o) && <p className="oc-reason">{aiWhy(o)}</p>}
               <div className="oc-foot">
                 {s ? <span className="small"><b>{s.title}</b> <span className="muted">· {s.sub}</span></span> : <span />}
                 <Icon name="chevron" className="muted" />
@@ -139,15 +185,19 @@ export default function RiskQueue({ orders, onSelect, onChange }: {
     return orders
       .filter((o) => matches(o, filter))
       .filter((o) => !q || [o.buyer_name, o.paypal_order_id, o.flag_reason, o.signal && SIGNAL_LABEL[o.signal]]
-        .some((v) => v?.toLowerCase().includes(q)))
+        .some((v) => v?.toLowerCase().includes(q)) || aiWhy(o).toLowerCase().includes(q))
       .sort((a, b) => score(b) - score(a) || +new Date(b.captured_at) - +new Date(a.captured_at));
   }, [orders, filter, search]);
 
   const columns = useMemo<ColDef<Order>[]>(() => [
     {
-      headerName: "Status", width: 140, cellRenderer: (p: ICellRendererParams<Order>) => p.data && <StatusBadge o={p.data} />,
+      headerName: "AI risk", width: 190, cellRenderer: RiskCell, autoHeight: true,
       valueGetter: (p) => (p.data ? score(p.data) : 0), sort: "desc",
+      filter: "agTextColumnFilter", filterValueGetter: (p) => (p.data ? aiRisk(p.data) ?? "none" : ""),
+      headerTooltip: "The AI's latest risk call on this order, with its confidence and when it last checked",
     },
+    { headerName: "Stage", width: 120, cellRenderer: StageCell, valueGetter: (p) => p.data?.watch_status ?? "",
+      filter: "agTextColumnFilter" },
     { headerName: "Buyer · order", minWidth: 180, flex: 1, cellRenderer: BuyerCell, autoHeight: true,
       valueGetter: (p) => p.data?.buyer_name ?? "", filter: "agTextColumnFilter" },
     {
@@ -156,8 +206,8 @@ export default function RiskQueue({ orders, onSelect, onChange }: {
       valueFormatter: (p) => (p.data ? money(p.data.amount, p.data.currency) : ""),
     },
     { headerName: "Problem", minWidth: 160, filter: "agTextColumnFilter", valueGetter: (p) => (p.data?.signal ? SIGNAL_LABEL[p.data.signal] ?? p.data.signal : "—") },
-    { headerName: "Why (AI)", field: "flag_reason", filter: "agTextColumnFilter", minWidth: 260, flex: 2, wrapText: true, autoHeight: true, cellClass: "cell-wrap" },
-    { headerName: "Next step", minWidth: 180, cellRenderer: StepCell, autoHeight: true, sortable: false },
+    { headerName: "Why (AI)", valueGetter: (p) => (p.data ? aiWhy(p.data) : ""), filter: "agTextColumnFilter", minWidth: 260, flex: 2, wrapText: true, autoHeight: true, cellClass: "cell-wrap" },
+    { headerName: "AI fix · PayPal call", minWidth: 210, cellRenderer: StepCell, autoHeight: true, sortable: false },
     { headerName: "", width: 120, sortable: false,
       cellRenderer: (p: ICellRendererParams<Order>) => p.data && <ApproveButton o={p.data} onDone={onChange} /> },
     { headerName: "Paid", width: 110, valueGetter: (p) => (p.data ? new Date(p.data.captured_at) : null),

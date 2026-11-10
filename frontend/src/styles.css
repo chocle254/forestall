@@ -412,3 +412,4 @@ textarea { resize: vertical; line-height: 1.5; }
 .confirm-box { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 10px 12px; width: 100%;
   border-radius: var(--radius-sm); background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); font-size: 14px; }
 .approve-all .alert { margin: 0; width: 100%; }
+.paypal-call { font-size: 11px; color: var(--accent); margin-top: 2px; }
