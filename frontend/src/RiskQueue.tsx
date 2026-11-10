@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AllCommunityModule, ModuleRegistry, themeQuartz,
-  type ColDef, type ICellRendererParams, type RowClickedEvent,
+  type CellClickedEvent, type ColDef, type GridApi, type ICellRendererParams,
 } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
 import { approveAction, type Order } from "./api";
@@ -115,16 +115,24 @@ const ago = (iso: string) => {
   const m = Math.max(0, Math.round((Date.now() - +new Date(iso)) / 60000));
   return m < 60 ? `${m}m ago` : m < 48 * 60 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
 };
+const riskText = (o: Order) =>
+  [aiRisk(o) ?? "no risk", o.signal && o.signal !== "none" ? SIGNAL_LABEL[o.signal] ?? o.signal : "", STAGE[o.watch_status][0]].filter(Boolean).join(" · ");
 const RISK_BADGE: Record<string, string> = { high: "danger", medium: "warn", low: "info" };
 const RiskCell = ({ data: o }: ICellRendererParams<Order>) => {
   if (!o) return null;
   const level = aiRisk(o);
-  if (!level) return <span className="muted small">{o.watch_status === "not_shipped" ? "Not checked yet" : "No risk"}</span>;
   const conf = o.ai_check?.confidence;
+  const [stage, tone] = STAGE[o.watch_status];
+  const problem = o.signal && o.signal !== "none" ? SIGNAL_LABEL[o.signal] ?? o.signal : null;
   return (
-    <div className="cell-stack">
-      <span className={`badge ${RISK_BADGE[level] ?? "neutral"}`}>{level[0].toUpperCase() + level.slice(1)} risk</span>
-      <span className="muted small">AI{conf ? ` · ${conf} confidence` : ""}{o.ai_checked_at ? ` · ${ago(o.ai_checked_at)}` : ""}</span>
+    <div className="cell-stack risk-cell">
+      {level
+        ? <span className={`badge ${RISK_BADGE[level] ?? "neutral"}`}>{level[0].toUpperCase() + level.slice(1)} risk</span>
+        : <span className={`badge ${tone}`}>{stage}</span>}
+      {level && problem && <span className="small">{problem}</span>}
+      <span className="muted small">
+        {o.ai_checked_at ? <>AI{conf ? ` · ${conf} confidence` : ""} · {ago(o.ai_checked_at)}</> : "Not checked yet"}
+      </span>
     </div>
   );
 };
@@ -134,11 +142,6 @@ const aiWhy = (o: Order) => o.flag_reason ?? o.ai_check?.reason ?? "";
 // Where the order is in its life, separate from the AI's risk call.
 const STAGE: Record<Order["watch_status"], [string, string]> = {
   not_shipped: ["Not shipped", "neutral"], watching: ["Watching", "info"], protected: ["Protected", "ok"], closed: ["Resolved", "ok"],
-};
-const StageCell = ({ data: o }: ICellRendererParams<Order>) => {
-  if (!o) return null;
-  const [label, tone] = STAGE[o.watch_status];
-  return <span className={`badge ${tone}`}>{label}</span>;
 };
 
 function OrderCards({ rows, onSelect, onChange }: { rows: Order[]; onSelect: (id: string) => void; onChange: () => void }) {
@@ -169,12 +172,97 @@ function OrderCards({ rows, onSelect, onChange }: { rows: Order[]; onSelect: (id
   );
 }
 
+// Fixes that can be approved from the grid: proposed, on an order still being watched.
+const approvable = (o: Order) => o.action_status === "proposed" && !!o.action_id && o.watch_status === "watching";
+const refundOf = (o: Order) =>
+  o.action_type === "partial_refund" ? Number(o.action_params?.amount ?? 0) : o.action_type === "full_refund" ? Number(o.amount) : 0;
+const atRisk = (o: Order) => aiRisk(o) === "high" || aiRisk(o) === "medium";
+
+// The pinned totals row: one string per column, computed from the rows left after every filter.
+type Summary = Record<string, string>;
+function summarize(rows: Order[]): Summary {
+  const risky = rows.filter(atRisk);
+  const waiting = rows.filter(approvable);
+  const refunds = waiting.reduce((t, o) => t + refundOf(o), 0);
+  return {
+    risk: `${risky.length} at risk of ${rows.length}`,
+    buyer: "Totals",
+    amount: money(risky.reduce((t, o) => t + Number(o.amount), 0)),
+    why: risky.length ? "← order value at risk of a dispute" : "",
+    fix: waiting.length ? `${waiting.length} waiting${refunds ? ` · ${money(refunds)} refunds` : ""}` : "No fixes waiting",
+  };
+}
+// The pinned totals row has Summary data, not an Order: give every column a value and a plain cell for it.
+function withSummaryRow(cols: ColDef<Order>[]): ColDef<Order>[] {
+  return cols.map((c) => ({
+    ...c,
+    valueGetter: (p) => p.node?.rowPinned
+      ? (p.data as unknown as Summary)[c.colId!] ?? ""
+      : typeof c.valueGetter === "function" ? c.valueGetter(p) : undefined,
+    valueFormatter: (p) => (p.node?.rowPinned ? String(p.value ?? "") : typeof c.valueFormatter === "function" ? c.valueFormatter(p) : String(p.value ?? "")),
+    cellRendererSelector: (p) => (p.node.rowPinned ? { component: SumCell } : undefined),
+  }));
+}
+const SumCell = ({ value }: ICellRendererParams) => <b className="sum-cell">{value as string}</b>;
+
+// Plain-text values for CSV export (the grid's own values are sort keys and rich cells).
+const EXPORT: Record<string, (o: Order) => string | number> = {
+  risk: riskText,
+  confidence: (o) => o.ai_check?.confidence ?? "",
+  buyer: (o) => `${o.buyer_name ?? "Unknown buyer"} (${o.paypal_order_id})`,
+  amount: (o) => `${o.amount} ${o.currency}`,
+  why: aiWhy,
+  fix: (o) => { const s = nextStep(o); return s ? `${s.title} (${s.sub})` : ""; },
+  call: (o) => (o.action_type && PAYPAL_CALL[o.action_type] ? `PayPal ${PAYPAL_CALL[o.action_type]}` : ""),
+  paid: (o) => o.captured_at,
+};
+
+function ApproveSelected({ selected, onDone }: { selected: Order[]; onDone: () => void }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  useEffect(() => { if (!selected.length) setAsking(false); }, [selected.length]);
+  const refunds = selected.reduce((t, o) => t + refundOf(o), 0);
+  const run = async () => {
+    setBusy(true);
+    let ok = 0, failed = 0;
+    for (const o of selected) {
+      try { (await approveAction(o.action_id!)).status === "failed" ? failed++ : ok++; } catch { failed++; }
+    }
+    setNote(`${ok} of ${selected.length} fixes ran on PayPal${failed ? `, ${failed} failed (see each order's timeline)` : ""}.`);
+    setBusy(false);
+    setAsking(false);
+    onDone();
+  };
+  if (!selected.length) return note ? <span className="small muted">{note}</span> : <span className="small muted">Tick fixes waiting for approval to run several at once.</span>;
+  return asking ? (
+    <span className="confirm-inline small">
+      Run <b>{selected.length}</b> fix{selected.length > 1 ? "es" : ""} on PayPal{refunds ? <>, including <b>{money(refunds)}</b> in refunds</> : null}?
+      <button className="btn primary sm" onClick={run} disabled={busy}>{busy ? "Running…" : "Run"}</button>
+      <button className="btn ghost sm" onClick={() => setAsking(false)} disabled={busy}>Cancel</button>
+    </span>
+  ) : (
+    <button className="btn primary sm" onClick={() => { setNote(null); setAsking(true); }}>
+      <Icon name="check" size={15} />Approve selected ({selected.length})
+    </button>
+  );
+}
+
 export default function RiskQueue({ orders, onSelect, onChange }: {
   orders: Order[]; onSelect: (id: string) => void; onChange: () => void;
 }) {
   const [filter, setFilter] = useState<Filter>(() => (orders.some(needsAttention) ? "attention" : "all"));
   const [search, setSearch] = useState("");
   const narrow = useMedia("(max-width: 760px)");
+  const api = useRef<GridApi<Order> | null>(null);
+  const [selected, setSelected] = useState<Order[]>([]);
+  const [summary, setSummary] = useState<Summary>({});
+
+  // Keep the queue live: re-read orders every 30s while the tab is visible, so AI changes flash in.
+  useEffect(() => {
+    const t = setInterval(() => { if (document.visibilityState === "visible") onChange(); }, 30000);
+    return () => clearInterval(t);
+  }, [onChange]);
 
   const counts = useMemo(
     () => Object.fromEntries(FILTERS.map(([f]) => [f, orders.filter((o) => matches(o, f)).length])) as Record<Filter, number>,
@@ -189,31 +277,46 @@ export default function RiskQueue({ orders, onSelect, onChange }: {
       .sort((a, b) => score(b) - score(a) || +new Date(b.captured_at) - +new Date(a.captured_at));
   }, [orders, filter, search]);
 
-  const columns = useMemo<ColDef<Order>[]>(() => [
+  const columns = useMemo<ColDef<Order>[]>(() => withSummaryRow([
     {
-      headerName: "AI risk", width: 190, cellRenderer: RiskCell, autoHeight: true,
+      colId: "risk", headerName: "AI risk", width: 210, cellRenderer: RiskCell, autoHeight: true, enableCellChangeFlash: true,
       valueGetter: (p) => (p.data ? score(p.data) : 0), sort: "desc",
-      filter: "agTextColumnFilter", filterValueGetter: (p) => (p.data ? aiRisk(p.data) ?? "none" : ""),
-      headerTooltip: "The AI's latest risk call on this order, with its confidence and when it last checked",
+      // Filter on the words in the cell: level, problem and stage (e.g. "high", "stalled", "protected").
+      filter: "agTextColumnFilter", filterValueGetter: (p) => (p.data ? riskText(p.data) : ""),
+      headerTooltip: "The AI's latest risk call, the problem it found, its confidence and when it last checked",
     },
-    { headerName: "Stage", width: 120, cellRenderer: StageCell, valueGetter: (p) => p.data?.watch_status ?? "",
-      filter: "agTextColumnFilter" },
-    { headerName: "Buyer · order", minWidth: 180, flex: 1, cellRenderer: BuyerCell, autoHeight: true,
+    { colId: "buyer", headerName: "Buyer · order", minWidth: 160, flex: 1, cellRenderer: BuyerCell, autoHeight: true,
       valueGetter: (p) => p.data?.buyer_name ?? "", filter: "agTextColumnFilter" },
     {
-      headerName: "Amount", width: 110, type: "rightAligned", cellClass: "num",
+      colId: "amount", headerName: "Amount", width: 115, type: "rightAligned", cellClass: "num",
       valueGetter: (p) => Number(p.data?.amount ?? 0), filter: "agNumberColumnFilter",
       valueFormatter: (p) => (p.data ? money(p.data.amount, p.data.currency) : ""),
     },
-    { headerName: "Problem", minWidth: 160, filter: "agTextColumnFilter", valueGetter: (p) => (p.data?.signal ? SIGNAL_LABEL[p.data.signal] ?? p.data.signal : "—") },
-    { headerName: "Why (AI)", valueGetter: (p) => (p.data ? aiWhy(p.data) : ""), filter: "agTextColumnFilter", minWidth: 260, flex: 2, wrapText: true, autoHeight: true, cellClass: "cell-wrap" },
-    { headerName: "AI fix · PayPal call", minWidth: 210, cellRenderer: StepCell, autoHeight: true, sortable: false },
-    { headerName: "", width: 120, sortable: false,
+    { colId: "why", headerName: "Why (AI)", valueGetter: (p) => (p.data ? aiWhy(p.data) : ""), filter: "agTextColumnFilter",
+      minWidth: 230, flex: 2, wrapText: true, autoHeight: true, cellClass: "cell-wrap" },
+    { colId: "fix", headerName: "AI fix · PayPal call", width: 200, cellRenderer: StepCell, autoHeight: true, sortable: false,
+      enableCellChangeFlash: true, valueGetter: (p) => (p.data ? `${p.data.action_type}:${p.data.action_status}` : "") },
+    { colId: "approve", headerName: "", width: 105, sortable: false,
       cellRenderer: (p: ICellRendererParams<Order>) => p.data && <ApproveButton o={p.data} onDone={onChange} /> },
-    { headerName: "Paid", width: 110, valueGetter: (p) => (p.data ? new Date(p.data.captured_at) : null),
+    { colId: "paid", headerName: "Paid", width: 100, valueGetter: (p) => (p.data ? new Date(p.data.captured_at) : null),
       filter: "agDateColumnFilter", filterParams: { comparator: sameDay },
       valueFormatter: (p) => (p.value ? shortDate((p.value as Date).toISOString()) : "") },
-  ], [onChange]);
+  ]), [onChange]);
+
+  const exportCsv = () => api.current?.exportDataAsCsv({
+    fileName: `forestall-risk-queue-${new Date().toISOString().slice(0, 10)}.csv`,
+    skipPinnedBottom: true,
+    columnKeys: ["risk", "buyer", "amount", "why", "fix", "paid"],
+    processHeaderCallback: (p) => p.column.getColDef().headerName ?? "",
+    processCellCallback: (p) => {
+      const o = p.node?.data as Order | undefined;
+      const id = p.column.getColId();
+      if (!o) return "";
+      if (id === "risk") return `${riskText(o)}${o.ai_check?.confidence ? ` (AI ${EXPORT.confidence(o)} confidence)` : ""}`;
+      if (id === "fix") return [EXPORT.fix(o), EXPORT.call(o)].filter(Boolean).join(" · ");
+      return String(EXPORT[id]?.(o) ?? "");
+    },
+  });
 
   return (
     <div className="queue">
@@ -239,18 +342,41 @@ export default function RiskQueue({ orders, onSelect, onChange }: {
         <OrderCards rows={rows} onSelect={onSelect} onChange={onChange} />
       ) : (
         <div className="grid-wrap">
+          <div className="grid-tools">
+            <ApproveSelected selected={selected} onDone={() => { api.current?.deselectAll(); onChange(); }} />
+            <button className="btn ghost sm" onClick={exportCsv}><Icon name="download" size={15} />Export CSV</button>
+          </div>
           <AgGridReact<Order>
             theme={theme}
             rowData={rows}
             columnDefs={columns}
+            onGridReady={(e) => { api.current = e.api; }}
+            rowSelection={{
+              mode: "multiRow", checkboxes: true, headerCheckbox: true, hideDisabledCheckboxes: true,
+              enableClickSelection: false, isRowSelectable: (n) => !!n.data && approvable(n.data),
+            }}
+            selectionColumnDef={{ width: 48, pinned: "left" }}
+            onSelectionChanged={(e) => setSelected(e.api.getSelectedRows().filter(approvable))}
+            pinnedBottomRowData={[summary]}
+            onModelUpdated={(e) => {
+              const shown: Order[] = [];
+              e.api.forEachNodeAfterFilter((n) => { if (n.data) shown.push(n.data); });
+              const next = summarize(shown);
+              setSummary((cur) => (JSON.stringify(cur) === JSON.stringify(next) ? cur : next));
+            }}
+            getRowClass={(p) => (p.node.rowPinned ? "grid-sum" : undefined)}
             defaultColDef={{ sortable: true, resizable: true, suppressMovable: true }}
-            getRowId={(p) => p.data.id}
+            getRowId={(p) => (p.data as Partial<Order>).id ?? "summary"}
             domLayout="autoHeight"
             pagination={rows.length > 15}
             paginationPageSize={15}
             paginationPageSizeSelector={[15, 30, 60]}
             rowClass="grid-row"
-            onRowClicked={(e: RowClickedEvent<Order>) => e.data && onSelect(e.data.id)}
+            onCellClicked={(e: CellClickedEvent<Order>) => {
+              // Open the order, except from the totals row, the checkbox column or the Approve button.
+              const col = e.column.getColId();
+              if (!e.node.rowPinned && e.data && col !== "approve" && !col.startsWith("ag-Grid-")) onSelect(e.data.id);
+            }}
           />
         </div>
       )}

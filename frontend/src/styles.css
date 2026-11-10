@@ -413,3 +413,8 @@ textarea { resize: vertical; line-height: 1.5; }
   border-radius: var(--radius-sm); background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); font-size: 14px; }
 .approve-all .alert { margin: 0; width: 100%; }
 .paypal-call { font-size: 11px; color: var(--accent); margin-top: 2px; }
+.grid-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 8px 4px 10px; min-height: 44px; }
+.confirm-inline { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.grid-sum { font-weight: 600; background: var(--surface-2) !important; cursor: default; }
+.sum-cell { font-size: 13px; }
+.risk-cell .badge { align-self: flex-start; }
